@@ -12,6 +12,7 @@
  */
 
 import algosdk from 'algosdk';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -28,6 +29,20 @@ interface DeployResult {
   appId: number;
   appAddress: string;
   txId: string;
+}
+
+/** Compute ARC-4 method selector: first 4 bytes of SHA-512/256(signature) */
+function methodSelector(signature: string): Uint8Array {
+  const hash = crypto.createHash('sha512-256').update(signature).digest();
+  return new Uint8Array(hash.slice(0, 4));
+}
+
+/** ABI-encode a uint64 as 8 bytes big-endian */
+function abiUint64(n: number): Uint8Array {
+  const buf = new Uint8Array(8);
+  const view = new DataView(buf.buffer);
+  view.setBigUint64(0, BigInt(n));
+  return buf;
 }
 
 async function main() {
@@ -54,44 +69,48 @@ async function main() {
   // Check balance
   const accountInfo = await algod.accountInformation(deployer.addr).do();
   const balance = accountInfo.amount;
-  console.log(`Account balance: ${(Number(balance) / 1e6).toFixed(6)} ALGO`);
+  console.log(`Account balance: ${(Number(balance) / 1_000_000).toFixed(6)} ALGO`);
 
-  if (balance < 5_000_000) {
-    console.error(`\nInsufficient balance. Need at least 5 ALGO for deployment.`);
+  if (balance < 2_000_000n) {
+    console.error(`\nInsufficient balance. Need at least 2 ALGO for deployment.`);
     console.log(`Fund at: https://bank.testnet.algorand.network/?account=${deployer.addr}`);
     process.exit(1);
   }
 
   const results: DeployResult[] = [];
 
-  // Deploy contracts in order
+  // Deploy contracts with ABI method selectors (TealScript uses ARC-4 routing)
   const contracts = [
     {
       name: 'StealthRegistry',
       createArgs: () => [
-        // createApplication() — no args
+        // createApplication()void
+        methodSelector('createApplication()void'),
       ],
     },
     {
       name: 'PrivacyPool',
       createArgs: () => [
-        // createApplication(denomination, assetId)
-        algosdk.encodeUint64(1_000_000), // 1 ALGO denomination
-        algosdk.encodeUint64(0),          // ALGO (not ASA)
+        // createApplication(uint64,uint64)void
+        methodSelector('createApplication(uint64,uint64)void'),
+        abiUint64(1_000_000), // 1 ALGO denomination
+        abiUint64(0),          // ALGO (not ASA)
       ],
     },
     {
       name: 'ShieldedPool',
       createArgs: () => [
-        // createApplication(assetId)
-        algosdk.encodeUint64(0), // ALGO
+        // createApplication(uint64)void
+        methodSelector('createApplication(uint64)void'),
+        abiUint64(0), // ALGO
       ],
     },
     {
       name: 'ConfidentialAsset',
       createArgs: () => [
-        // createApplication(assetId)
-        algosdk.encodeUint64(0), // ALGO
+        // createApplication(uint64)void
+        methodSelector('createApplication(uint64)void'),
+        abiUint64(0), // ALGO
       ],
     },
   ];
@@ -183,14 +202,14 @@ async function deployContract(
     numLocalByteSlices: localBytes,
     onComplete: algosdk.OnApplicationComplete.NoOpOC,
     appArgs: createArgs,
-    suggestedParams: { ...params, fee: 2000, flatFee: true },
+    suggestedParams: { ...params, fee: BigInt(2000), flatFee: true },
   });
 
   const signed = txn.signTxn(deployer.sk);
   const resp = await algod.sendRawTransaction(signed).do();
   const txId = (resp as any).txid ?? (resp as any).txId;
   const result = await algosdk.waitForConfirmation(algod, txId, 4);
-  const appId = (result as any)['application-index'];
+  const appId = Number((result as any).applicationIndex);
   const appAddress = algosdk.getApplicationAddress(appId);
 
   return { name, appId, appAddress: String(appAddress), txId };
