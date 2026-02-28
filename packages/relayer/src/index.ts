@@ -28,6 +28,7 @@ const ALGOD_TOKEN = process.env.ALGOD_TOKEN || '';
 const RELAYER_MNEMONIC = process.env.RELAYER_MNEMONIC;
 const FEE_PERCENT = parseInt(process.env.FEE_PERCENT || '50'); // basis points
 const MIN_FEE = BigInt(process.env.MIN_FEE || '10000'); // minimum fee in base units
+const VKEY_PATH = process.env.VKEY_PATH || ''; // path to verification key JSON
 
 if (!RELAYER_MNEMONIC) {
   console.error('ERROR: RELAYER_MNEMONIC environment variable is required');
@@ -45,6 +46,7 @@ const server = new RelayerServer({
   feePercent: FEE_PERCENT,
   minFee: MIN_FEE,
   port: PORT,
+  vkeyPaths: VKEY_PATH ? { default: VKEY_PATH } : undefined,
 });
 
 server.start();

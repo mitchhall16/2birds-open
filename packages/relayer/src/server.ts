@@ -112,7 +112,10 @@ export class RelayerServer {
 
       // 3. Verify the relayer address in the proof matches us
       // (Prevents proof reuse with a different relayer)
-      // In production, verify proof.publicInputs.relayer === this.relayerAccount.addr
+      if (String(proof.publicInputs.relayer) !== String(this.relayerAccount.addr)) {
+        res.status(400).json({ error: 'Proof relayer address does not match this relayer' });
+        return;
+      }
 
       // 4. Verify the fee is acceptable
       const poolConfig = this.findPool(BigInt(body.poolAppId), body.poolAssetId);
@@ -129,8 +132,15 @@ export class RelayerServer {
         return;
       }
 
-      // 5. Verify the ZK proof locally (optional but prevents wasting gas on invalid proofs)
-      // In production: await verifyWithdrawProof(proof, vkeyPath);
+      // 5. Verify the ZK proof locally (prevents wasting gas on invalid proofs)
+      const vkeyPath = this.config.vkeyPaths?.[body.poolAppId];
+      if (vkeyPath) {
+        const valid = await verifyWithdrawProof(proof, vkeyPath);
+        if (!valid) {
+          res.status(400).json({ error: 'Invalid ZK proof' });
+          return;
+        }
+      }
 
       // 6. Submit the withdrawal on-chain
       this.pendingWithdrawals++;
