@@ -4,29 +4,29 @@
 // Generated from verification key
 
 // === Step 1: Extract proof from arg[0] (256 bytes) ===
-txna ApplicationArgs 0
+arg 0
 len
 pushint 256
 ==
 assert // proof must be 256 bytes
 
 // pi_a = arg[0][0:64] (G1 point)
-txna ApplicationArgs 0
+arg 0
 extract 0 64
 store 0 // pi_a
 
 // pi_b = arg[0][64:192] (G2 point)
-txna ApplicationArgs 0
+arg 0
 extract 64 128
 store 1 // pi_b
 
 // pi_c = arg[0][192:256] (G1 point)
-txna ApplicationArgs 0
+arg 0
 extract 192 64
 store 2 // pi_c
 
 // === Step 2: Extract 5 public signals from arg[1] (160 bytes) ===
-txna ApplicationArgs 1
+arg 1
 len
 pushint 160
 ==
@@ -39,7 +39,7 @@ pushbytes 0x049c655dfa0e221a78944d87c16d31dbf28d4a9e3e087cce94d6615ac2060a350d9a
 store 10 // vk_x = IC[0]
 
 // vk_x += signal[0] * IC[1]
-txna ApplicationArgs 1
+arg 1
 extract 0 32
 pushbytes 0x0980b571e1f27024ec00f3868a3d06ab8df1046582480ecd70a97cb8b417358522aa59e4f9a36567e4e99c2173edb144dec156615afc637b3572a65019d6f698
 ec_scalar_mul BN254g1
@@ -49,7 +49,7 @@ ec_add BN254g1
 store 10 // vk_x updated
 
 // vk_x += signal[1] * IC[2]
-txna ApplicationArgs 1
+arg 1
 extract 32 32
 pushbytes 0x0f85215fe696a87790d657f3a83f3a52bbbf4845a7c26ea5a2b19c3c71caf0c80356ada9cb6432149db3b945c9fee0825f41b2abfb44559e6dae03dadbdfd075
 ec_scalar_mul BN254g1
@@ -59,7 +59,7 @@ ec_add BN254g1
 store 10 // vk_x updated
 
 // vk_x += signal[2] * IC[3]
-txna ApplicationArgs 1
+arg 1
 extract 64 32
 pushbytes 0x049d0cca74d16362fbf7cd2283877dd52e5f7e6ed243f4c966dfd18cc766b35625fa2686b6e97a2d3b5206c8687d9c9dd4a807a8d5facf65ac1cfb07ccd90568
 ec_scalar_mul BN254g1
@@ -69,7 +69,7 @@ ec_add BN254g1
 store 10 // vk_x updated
 
 // vk_x += signal[3] * IC[4]
-txna ApplicationArgs 1
+arg 1
 extract 96 32
 pushbytes 0x29221dae722e3a49d50c28c849497d9733b55946f6e6cccd3a643c74745b7b2d2cd6e62102988239578d2dcb93b0836d8684d9467093e5d2fb2cf0f246d2128a
 ec_scalar_mul BN254g1
@@ -79,7 +79,7 @@ ec_add BN254g1
 store 10 // vk_x updated
 
 // vk_x += signal[4] * IC[5]
-txna ApplicationArgs 1
+arg 1
 extract 128 32
 pushbytes 0x07ad7835a4118923c4f25526e4577457a442ec4006b9299bd105378884e991a00d5290fecc5c5e94348a121fcb7e1908960413e956b896b14a3790ebb09d113e
 ec_scalar_mul BN254g1

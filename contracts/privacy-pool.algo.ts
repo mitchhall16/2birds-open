@@ -11,11 +11,13 @@ class PrivacyPool extends Contract {
   assetId = GlobalStateKey<uint64>({ key: 'asset_id' });
   rootHistoryIndex = GlobalStateKey<uint64>({ key: 'rhi' });
 
-  // Box storage
-  treeFrontier = BoxMap<uint64, bytes>({ prefix: 'tree' });
+  // Box storage — no on-chain tree; MiMC root is computed off-chain and passed in
+  commitments = BoxMap<uint64, bytes>({ prefix: 'cmt' });
   nullifiers = BoxMap<bytes, bytes>({ prefix: 'null' });
   rootHistory = BoxMap<uint64, bytes>({ prefix: 'root' });
-  zeroHashes = BoxMap<uint64, bytes>({ prefix: 'zero' });
+
+  // Store deposit amounts per leaf index
+  depositAmounts = BoxMap<uint64, uint64>({ prefix: 'amt' });
 
   /**
    * Initialize the privacy pool.
@@ -33,37 +35,45 @@ class PrivacyPool extends Contract {
   /**
    * Deposit funds into the privacy pool.
    * Commitment = MiMC(secret, nullifier) computed off-chain.
-   * Must be accompanied by a payment of exactly `denomination`.
+   * mimcRoot = new MiMC Merkle root after inserting this commitment (computed off-chain).
+   * Must be accompanied by a payment of any amount > 0.
    */
-  deposit(commitment: bytes): void {
+  deposit(commitment: bytes, mimcRoot: bytes): void {
     assert(len(commitment) === 32);
+    assert(len(mimcRoot) === 32);
 
-    // Verify payment in the preceding transaction
+    // Verify payment in the preceding transaction (any amount > 0)
     const payTxn = this.txnGroup[this.txn.groupIndex - 1];
     if (this.assetId.value === 0) {
       verifyPayTxn(payTxn, {
         receiver: this.app.address,
-        amount: this.denomination.value,
       });
+      assert(payTxn.amount > 0);
     } else {
       verifyAssetTransferTxn(payTxn, {
         assetReceiver: this.app.address,
-        assetAmount: this.denomination.value,
         xferAsset: AssetID.fromUint64(this.assetId.value),
       });
+      assert(payTxn.amount > 0);
     }
 
-    // Insert commitment into Merkle tree
+    // Store commitment
     const leafIndex = this.nextIndex.value;
     assert(leafIndex < (1 << TREE_DEPTH));
-    this.insertLeaf(commitment, leafIndex);
+    this.commitments(leafIndex).value = commitment;
+
+    // Store the deposited amount for this leaf
+    this.depositAmounts(leafIndex).value = payTxn.amount;
+
+    // Accept the off-chain MiMC root
+    this.currentRoot.value = mimcRoot;
 
     // Increment leaf counter
     this.nextIndex.value = leafIndex + 1;
 
     // Store new root in history (ring buffer)
     const histIdx = this.rootHistoryIndex.value;
-    this.rootHistory(histIdx % ROOT_HISTORY_SIZE).value = this.currentRoot.value;
+    this.rootHistory(histIdx % ROOT_HISTORY_SIZE).value = mimcRoot;
     this.rootHistoryIndex.value = histIdx + 1;
 
     // Log deposit event
@@ -80,6 +90,7 @@ class PrivacyPool extends Contract {
     relayer: Address,
     fee: uint64,
     root: bytes,
+    amount: uint64,
   ): void {
     // 1. Verify the root is known
     assert(this.isKnownRoot(root));
@@ -94,7 +105,8 @@ class PrivacyPool extends Contract {
     assert(this.txn.groupIndex > 0);
 
     // 5. Send funds to recipient
-    const withdrawAmount = this.denomination.value - fee;
+    assert(amount > fee);
+    const withdrawAmount = amount - fee;
 
     if (this.assetId.value === 0) {
       sendPayment({
@@ -145,34 +157,6 @@ class PrivacyPool extends Contract {
     }
 
     return false;
-  }
-
-  /**
-   * Insert a leaf into the incremental Merkle tree.
-   */
-  private insertLeaf(leaf: bytes, index: uint64): void {
-    let currentHash = leaf;
-    let currentIndex = index;
-
-    for (let level = 0; level < TREE_DEPTH; level += 1) {
-      const lvl = level as uint64;
-      if (currentIndex % 2 === 0) {
-        // Left child — store in frontier, hash with zero
-        this.treeFrontier(lvl).value = currentHash;
-        const zeroHash = this.zeroHashes(lvl).exists
-          ? this.zeroHashes(lvl).value
-          : bzero(32);
-        currentHash = rawBytes(sha256(concat(currentHash, zeroHash)));
-      } else {
-        // Right child — load frontier, hash together
-        const leftSibling = this.treeFrontier(lvl).value;
-        currentHash = rawBytes(sha256(concat(leftSibling, currentHash)));
-      }
-
-      currentIndex = currentIndex / 2;
-    }
-
-    this.currentRoot.value = currentHash;
   }
 
   /**

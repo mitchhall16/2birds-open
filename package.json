@@ -2,7 +2,8 @@
   "name": "algo-privacy",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "frontend"
   ],
   "scripts": {
     "build": "npm run build --workspaces",

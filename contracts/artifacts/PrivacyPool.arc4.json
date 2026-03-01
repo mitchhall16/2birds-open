@@ -21,7 +21,7 @@
     },
     {
       "name": "deposit",
-      "desc": "Deposit funds into the privacy pool.\nCommitment = MiMC(secret, nullifier) computed off-chain.\nMust be accompanied by a payment of exactly .",
+      "desc": "Deposit funds into the privacy pool.\nCommitment = MiMC(secret, nullifier) computed off-chain.\nMust be accompanied by a payment of any amount  0.",
       "args": [
         {
           "name": "commitment",
@@ -55,6 +55,10 @@
         {
           "name": "root",
           "type": "byte[]"
+        },
+        {
+          "name": "amount",
+          "type": "uint64"
         }
       ],
       "returns": {
