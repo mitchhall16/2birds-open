@@ -273,6 +273,8 @@ export function encodeProofForVerifier(proof: {
   const result = new Uint8Array(256)
   result.set(scalarToBytes(proof.pi_a[0]), 0)
   result.set(scalarToBytes(proof.pi_a[1]), 32)
+  // AVM (gnark-crypto) expects G2 as: x_real || x_imag || y_real || y_imag
+  // snarkjs gives pi_b as: [[x_real, x_imag], [y_real, y_imag]] — same order
   result.set(scalarToBytes(proof.pi_b[0][0]), 64)
   result.set(scalarToBytes(proof.pi_b[0][1]), 96)
   result.set(scalarToBytes(proof.pi_b[1][0]), 128)
@@ -297,6 +299,242 @@ export function encodePublicSignals(
   result.set(scalarToBytes(addressToScalar(relayer)), 96)
   result.set(scalarToBytes(fee), 128)
   return result
+}
+
+// ── Deterministic Note Derivation ────────
+// Derives deposit secrets from a wallet signature so notes survive cache clears.
+// Same wallet → same signature → same master key → same notes on any device.
+
+const MASTER_KEY_SESSION = 'privacy_pool_master_key'
+const MASTER_KEY_MESSAGE = 'privacy-pool-master-key-v1'
+
+/** Cached master key for this session */
+let cachedMasterKey: bigint | null = null
+
+/** Get the master key, loading from sessionStorage cache if available */
+export function getCachedMasterKey(): bigint | null {
+  if (cachedMasterKey) return cachedMasterKey
+  const stored = sessionStorage.getItem(MASTER_KEY_SESSION)
+  if (stored) {
+    cachedMasterKey = BigInt(stored)
+    return cachedMasterKey
+  }
+  return null
+}
+
+/**
+ * Derive a master key from a wallet signature (ARC-0047 signData).
+ * Ed25519 signatures are deterministic — same message + same wallet = same signature every time.
+ * Falls back to a random key (cached per session) if wallet doesn't support signData.
+ */
+export async function deriveMasterKey(
+  signData?: ((data: string, metadata: { scope: number; encoding: string }) => Promise<{ signature: Uint8Array }>) | null,
+): Promise<bigint> {
+  // Check cache first
+  const cached = getCachedMasterKey()
+  if (cached) return cached
+
+  await initMimc()
+
+  let masterKey: bigint
+
+  if (signData) {
+    try {
+      const result = await signData(MASTER_KEY_MESSAGE, {
+        scope: 1, // ScopeType.AUTH
+        encoding: 'utf-8',
+      })
+
+      // Hash the signature into a BN254 scalar to use as master key
+      const sigScalar = bytesToScalar(result.signature.slice(0, 32))
+      masterKey = mimcHash(sigScalar, bytesToScalar(result.signature.slice(32, 64)))
+    } catch {
+      // Wallet doesn't support signData — use random key for this session
+      const bytes = new Uint8Array(32)
+      crypto.getRandomValues(bytes)
+      masterKey = bytesToScalar(bytes) % BN254_R
+    }
+  } else {
+    // No signData available — use random key for this session
+    const bytes = new Uint8Array(32)
+    crypto.getRandomValues(bytes)
+    masterKey = bytesToScalar(bytes) % BN254_R
+  }
+
+  // Cache in memory and sessionStorage
+  cachedMasterKey = masterKey
+  sessionStorage.setItem(MASTER_KEY_SESSION, masterKey.toString())
+
+  return masterKey
+}
+
+/**
+ * Derive a deterministic deposit note from the master key and an index.
+ * secret_i = MiMC(masterKey, 2*i)
+ * nullifier_i = MiMC(masterKey, 2*i + 1)
+ */
+export function deriveDeposit(
+  masterKey: bigint,
+  depositIndex: number,
+  denomination: bigint = POOL_DENOMINATION,
+  assetId: number = 0,
+): DepositNote {
+  const secret = mimcHash(masterKey, BigInt(depositIndex * 2))
+  const nullifier = mimcHash(masterKey, BigInt(depositIndex * 2 + 1))
+  const commitment = mimcHash(secret, nullifier)
+
+  return {
+    secret,
+    nullifier,
+    commitment,
+    leafIndex: -1,
+    denomination,
+    assetId,
+    timestamp: Date.now(),
+  }
+}
+
+/** Get the next deposit index for this wallet (how many deterministic deposits exist) */
+export function getNextDepositIndex(): number {
+  const key = `privacy_pool_deposit_counter_${CONTRACTS.PrivacyPool.appId}`
+  return parseInt(localStorage.getItem(key) || '0', 10)
+}
+
+/** Increment the deposit counter after a successful deposit */
+export function incrementDepositIndex(): void {
+  const key = `privacy_pool_deposit_counter_${CONTRACTS.PrivacyPool.appId}`
+  const current = getNextDepositIndex()
+  localStorage.setItem(key, (current + 1).toString())
+}
+
+/**
+ * Recover notes by scanning the chain for matching commitments.
+ * Iterates deposit indices 0, 1, 2, ... checking if each commitment exists on-chain.
+ * Skips notes whose nullifiers have already been spent.
+ */
+export async function recoverNotes(
+  masterKey: bigint,
+  client: algosdk.Algodv2,
+  appId?: number,
+): Promise<{ recovered: DepositNote[]; total: number; spent: number }> {
+  await initMimc()
+
+  const id = appId ?? CONTRACTS.PrivacyPool.appId
+  const recovered: DepositNote[] = []
+  let total = 0
+  let spent = 0
+
+  // Read nextIndex from global state to know how many deposits exist
+  const appInfo = await client.getApplicationByID(id).do()
+  const globalState = (appInfo as any).params?.globalState || (appInfo as any).params?.['global-state'] || []
+  let onChainNextIndex = 0
+  for (const kv of globalState) {
+    const key = typeof kv.key === 'string' ? atob(kv.key) : new TextDecoder().decode(kv.key)
+    if (key === 'next_idx') onChainNextIndex = Number(kv.value?.uint ?? kv.value?.ui ?? 0)
+  }
+
+  // Try deposit indices until we find 5 consecutive misses
+  let consecutiveMisses = 0
+  for (let i = 0; consecutiveMisses < 5; i++) {
+    const note = deriveDeposit(masterKey, i)
+    const commitBytes = scalarToBytes(note.commitment)
+
+    // Check if this commitment exists on-chain
+    const boxName = new Uint8Array(11)
+    boxName.set(TEXT_ENCODER.encode('cmt'), 0)
+
+    // We need to find which leaf index has this commitment
+    let foundLeafIndex = -1
+    for (let leaf = 0; leaf < onChainNextIndex; leaf++) {
+      const leafBoxName = new Uint8Array(11)
+      leafBoxName.set(TEXT_ENCODER.encode('cmt'), 0)
+      leafBoxName.set(uint64ToBytes(BigInt(leaf)), 3)
+      try {
+        const boxResult = await client.getApplicationBoxByName(id, leafBoxName).do()
+        if (arraysEqual(boxResult.value, commitBytes)) {
+          foundLeafIndex = leaf
+          break
+        }
+      } catch {
+        continue
+      }
+    }
+
+    if (foundLeafIndex === -1) {
+      consecutiveMisses++
+      continue
+    }
+
+    consecutiveMisses = 0
+    total++
+    note.leafIndex = foundLeafIndex
+    note.appId = id
+
+    // Read the deposited amount
+    const amtBoxName = new Uint8Array(11)
+    amtBoxName.set(TEXT_ENCODER.encode('amt'), 0)
+    amtBoxName.set(uint64ToBytes(BigInt(foundLeafIndex)), 3)
+    try {
+      const amtBox = await client.getApplicationBoxByName(id, amtBoxName).do()
+      note.denomination = bytesToScalar(amtBox.value)
+    } catch {
+      // Default to pool denomination
+    }
+
+    // Check if nullifier has been spent
+    const nullHash = computeNullifierHash(note.nullifier)
+    const nullBytes = scalarToBytes(nullHash)
+    const nullBoxName = new Uint8Array(4 + nullBytes.length)
+    nullBoxName.set(TEXT_ENCODER.encode('null'), 0)
+    nullBoxName.set(nullBytes, 4)
+    try {
+      await client.getApplicationBoxByName(id, nullBoxName).do()
+      // Box exists — nullifier spent, skip this note
+      spent++
+      continue
+    } catch {
+      // Box doesn't exist — not spent, note is recoverable
+    }
+
+    recovered.push(note)
+  }
+
+  // Save recovered notes and update counter
+  const existingNotes = loadNotes()
+  for (const note of recovered) {
+    const alreadyExists = existingNotes.some(n =>
+      n.commitment === note.commitment && n.appId === note.appId
+    )
+    if (!alreadyExists) {
+      saveNote(note)
+    }
+  }
+
+  // Update deposit counter to highest index found
+  if (total > 0) {
+    const key = `privacy_pool_deposit_counter_${id}`
+    const current = getNextDepositIndex()
+    if (total > current) {
+      localStorage.setItem(key, total.toString())
+    }
+  }
+
+  return { recovered, total, spent }
+}
+
+/** Compare two Uint8Arrays */
+function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
+/** Clear master key cache (on wallet disconnect) */
+export function clearMasterKey(): void {
+  cachedMasterKey = null
+  sessionStorage.removeItem(MASTER_KEY_SESSION)
 }
 
 // ── Utilities ───────────────────────────

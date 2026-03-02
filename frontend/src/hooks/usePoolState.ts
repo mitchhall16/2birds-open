@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useWallet } from '@txnlab/use-wallet-react'
-import { CONTRACTS, ALGOD_CONFIG } from '../lib/config'
+import { CONTRACTS, ALGOD_CONFIG, INDEXER_CONFIG } from '../lib/config'
+import { loadNotes } from '../lib/privacy'
 import algosdk from 'algosdk'
 
 interface PoolState {
-  totalDeposited: number // in ALGO
+  totalDeposited: number // total user-deposited ALGO in the pool
+  userBalance: number // this user's shielded notes total
   depositCount: number
   isLoading: boolean
   error: string | null
@@ -12,9 +14,56 @@ interface PoolState {
   refresh: () => void
 }
 
+/**
+ * Query the indexer to compute real user deposits in the pool.
+ * Only counts payments that are part of an atomic group (deposit txns),
+ * and subtracts inner-transaction withdrawals from app calls.
+ */
+async function fetchPoolDeposits(poolAddr: string): Promise<number> {
+  const base = INDEXER_CONFIG.baseServer.replace(/\/$/, '')
+
+  // 1. Sum grouped payment txns TO the pool (real deposits)
+  let totalIn = 0
+  let nextToken = ''
+  do {
+    const url = `${base}/v2/transactions?address=${poolAddr}&address-role=receiver&tx-type=pay&limit=100${nextToken ? `&next=${nextToken}` : ''}`
+    const res = await fetch(url)
+    const data = await res.json()
+    for (const tx of data.transactions ?? []) {
+      if (tx.group) {
+        totalIn += tx['payment-transaction']?.amount ?? 0
+      }
+    }
+    nextToken = data['next-token'] ?? ''
+  } while (nextToken)
+
+  // 2. Sum inner-txn withdrawals (app calls that produce inner pay txns out)
+  let totalOut = 0
+  nextToken = ''
+  do {
+    const url = `${base}/v2/transactions?address=${poolAddr}&tx-type=appl&limit=100${nextToken ? `&next=${nextToken}` : ''}`
+    const res = await fetch(url)
+    const data = await res.json()
+    for (const tx of data.transactions ?? []) {
+      for (const itx of tx['inner-txns'] ?? []) {
+        if (itx['tx-type'] === 'pay') {
+          const receiver = itx['payment-transaction']?.receiver ?? ''
+          if (receiver !== poolAddr) {
+            totalOut += itx['payment-transaction']?.amount ?? 0
+          }
+        }
+      }
+    }
+    nextToken = data['next-token'] ?? ''
+  } while (nextToken)
+
+  return Math.max(0, totalIn - totalOut) / 1_000_000
+}
+
 export function usePoolState(): PoolState {
   const { activeAddress, algodClient } = useWallet()
   const [totalDeposited, setTotalDeposited] = useState(0)
+  const [userBalance, setUserBalance] = useState(0)
   const [depositCount, setDepositCount] = useState(0)
   const [walletBalance, setWalletBalance] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
@@ -25,29 +74,35 @@ export function usePoolState(): PoolState {
     setError(null)
 
     try {
-      // Use the algodClient from use-wallet if available, else create one
       const client = algodClient ?? new algosdk.Algodv2(
         ALGOD_CONFIG.token,
         ALGOD_CONFIG.baseServer,
         ALGOD_CONFIG.port,
       )
 
-      // Get pool contract account info to read balance
       const poolAddr = CONTRACTS.PrivacyPool.appAddress
+      const appId = CONTRACTS.PrivacyPool.appId
+
+      // Pool total via indexer (grouped deposits minus withdrawals)
       try {
-        const accountInfo = await client.accountInformation(poolAddr).do()
-        const balanceMicroAlgo = Number(accountInfo.amount ?? 0)
-        // Subtract minimum balance (0.1 ALGO)
-        const available = Math.max(0, balanceMicroAlgo - 100_000)
-        setTotalDeposited(available / 1_000_000)
+        const poolTotal = await fetchPoolDeposits(poolAddr)
+        setTotalDeposited(poolTotal)
       } catch {
-        // Pool might not be funded yet
         setTotalDeposited(0)
       }
 
-      // Try to read app global state for deposit count
+      // User's shielded balance from their local notes
       try {
-        const appInfo = await client.getApplicationByID(CONTRACTS.PrivacyPool.appId).do()
+        const notes = loadNotes()
+        const userTotal = notes.reduce((sum, n) => sum + Number(n.denomination), 0)
+        setUserBalance(userTotal / 1_000_000)
+      } catch {
+        setUserBalance(0)
+      }
+
+      // Deposit count from global state
+      try {
+        const appInfo = await client.getApplicationByID(appId).do()
         const globalState = (appInfo as any).params?.globalState || (appInfo as any).params?.['global-state'] || []
         for (const kv of globalState as any[]) {
           const key = typeof kv.key === 'string' ? atob(kv.key) : new TextDecoder().decode(kv.key)
@@ -79,13 +134,13 @@ export function usePoolState(): PoolState {
 
   useEffect(() => {
     fetchState()
-    // Poll every 15s
-    const interval = setInterval(fetchState, 15_000)
+    const interval = setInterval(fetchState, 30_000)
     return () => clearInterval(interval)
   }, [fetchState])
 
   return {
     totalDeposited,
+    userBalance,
     depositCount,
     isLoading,
     error,

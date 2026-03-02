@@ -219,12 +219,86 @@ cd circuits && bash build.sh
   Proof valid: true
 ```
 
+## Live Frontend
+
+**URL**: https://algo-privacy.pages.dev (Cloudflare Pages, Algorand Testnet)
+
+**Build & Deploy**:
+```bash
+cd frontend && npx vite build
+npx wrangler pages deploy dist --project-name algo-privacy --branch main --commit-dirty=true
+```
+
+### What's Working
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Wallet connect (Pera/Defly) | Working | via @txnlab/use-wallet-react |
+| Deposit (variable 0-1 ALGO) | Working | MiMC commitment + Merkle tree insert |
+| Withdraw (Send to address) | Working | ZK proof + LogicSig verifier in 3-txn atomic group |
+| Private Send (deposit+withdraw) | Working | One-click deposit-then-withdraw to destination |
+| Pool balance badge | Working | Queries indexer for grouped deposits minus withdrawals |
+| Your balance badge | Working | Sum of local notes (localStorage) |
+| Note recovery | Working | Re-derives notes from master key, checks nullifiers on-chain |
+| Note management (Manage tab) | Working | Send individual notes to any address |
+| Split notes (slider UI) | Built, untested | Withdraw original, re-deposit as two notes. 400 error under investigation |
+| Combine notes | Built, untested | Withdraw multiple, re-deposit as single note |
+| Animated pool blob | Working | Scales with pool balance |
+| Toast notifications | Working | Success/error feedback |
+| Deploy new contract | Working | In-app contract deployment for fresh pools |
+
+### Key Files
+
+```
+frontend/
+├── src/
+│   ├── App.tsx                        # Main layout, badges, blob
+│   ├── components/
+│   │   ├── TransactionFlow.tsx        # Deposit/Send/Manage tabs, split/combine UI
+│   │   ├── PoolBlob.tsx               # Animated background blob
+│   │   ├── CostBreakdown.tsx          # Fee estimates
+│   │   └── StatusBar.tsx              # Network/wallet status
+│   ├── hooks/
+│   │   ├── useTransaction.ts          # deposit, withdraw, privateSend, splitNote, combineNotes
+│   │   ├── usePoolState.ts            # Pool balance (indexer), user balance (notes), wallet balance
+│   │   └── useDeployer.ts             # Contract deployment
+│   ├── lib/
+│   │   ├── privacy.ts                 # MiMC, commitments, nullifiers, note storage, recovery
+│   │   ├── tree.ts                    # Client-side MiMC Merkle tree (depth 20)
+│   │   ├── config.ts                  # Contract addresses, algod/indexer endpoints
+│   │   └── errorMessages.ts           # Human-readable error mapping
+│   └── styles/
+│       ├── globals.css                # Theme variables, fonts
+│       └── components.css             # All component styles
+├── public/
+│   ├── circuits/                      # withdraw.wasm, withdraw_final.zkey
+│   └── contracts/                     # withdraw_verifier.teal
+└── vite.config.ts
+```
+
+### Contract (Testnet)
+
+- **App ID**: 756386181
+- **App Address**: `FMRABDCQUIZAVWTKIYAZEQZUWC6546MZZTOI2A3YG34PVY3SXBZH4NHQNY`
+- **Global state**: `root` (current Merkle root), `rhi` (root history index), `next_idx` (deposit count)
+- **Box storage**: commitments (by index), nullifiers (by hash), root history (circular buffer)
+- Users can deploy their own contract via the Deploy banner (stored in localStorage)
+
+### Known Issues / TODO
+
+- **Split 400 error**: `splitNote()` gets `Sig:[0 0 0...]` error from algod. The withdraw-to-self step may need debugging with specific wallet providers. The `assembleWithdrawGroup()` helper handles both compact and full signer arrays, but the root cause may be elsewhere (stale Merkle state, wallet-specific signer behavior, etc.)
+- **Combine**: Not yet tested live. Same withdraw group assembly as split.
+- **Pool balance accuracy**: Uses indexer to count grouped payments (deposits) minus inner-txn payments (withdrawals). Solo payments (setup funding) are excluded. Polls every 30s.
+- **Note persistence**: Notes are in localStorage only. Clearing browser data loses notes. Recovery re-derives from master key but requires wallet signature.
+
 ## On-Chain Costs
 
 | Operation | Cost | Details |
 |-----------|------|---------|
-| Deposit | ~0.01 ALGO | App call + MBR for Merkle tree update |
-| Withdraw | ~0.008 ALGO | LogicSig verification (8 min fees for opcode budget) |
+| Deposit | ~0.002 ALGO | Payment (0.001) + app call (0.001), 3 box refs |
+| Withdraw | ~0.009 ALGO | Fund LogicSig (0.001) + verifier (0.006) + app call (0.002) |
+| Split | ~0.013 ALGO | 1 withdraw (0.009) + 2 deposits (0.004) |
+| Combine (2 notes) | ~0.020 ALGO | 2 withdraws (0.018) + 1 deposit (0.002) |
 | Stealth Register | ~0.05 ALGO | Box MBR for meta-address (128 bytes) |
 | Stealth Send | Standard | Normal Algorand transfer to one-time address |
 

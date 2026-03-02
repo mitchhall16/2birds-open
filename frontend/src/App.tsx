@@ -3,6 +3,7 @@ import { useWallet } from '@txnlab/use-wallet-react'
 import { StatusBar } from './components/StatusBar'
 import { PoolBlob } from './components/PoolBlob'
 import { TransactionFlow } from './components/TransactionFlow'
+import { ToastContainer } from './components/ToastContainer'
 import { usePoolState } from './hooks/usePoolState'
 import { useDeploy } from './hooks/useDeploy'
 
@@ -13,7 +14,8 @@ export function App() {
   const [depositAnim, setDepositAnim] = useState(false)
   const [withdrawAnim, setWithdrawAnim] = useState(false)
 
-  const needsDeploy = !localStorage.getItem('privacy_pool_app_id')
+  // Contracts are already deployed — hardcoded in config.ts
+  const needsDeploy = false
 
   const handleDeposit = useCallback(() => {
     setDepositAnim(true)
@@ -44,10 +46,18 @@ export function App() {
         />
       </div>
 
-      {/* Pool balance — bottom right */}
-      <div className="pool-badge">
-        <span className="pool-badge__label">Pool Balance</span>
-        <span className="pool-badge__value">{pool.totalDeposited.toFixed(3)} ALGO</span>
+      {/* Balances — bottom right */}
+      <div className="pool-badges">
+        {pool.userBalance > 0 && (
+          <div className="pool-badge pool-badge--user">
+            <span className="pool-badge__label">Your Balance</span>
+            <span className="pool-badge__value">{pool.userBalance.toFixed(3)} ALGO</span>
+          </div>
+        )}
+        <div className="pool-badge">
+          <span className="pool-badge__label">Pool Balance</span>
+          <span className="pool-badge__value">{pool.totalDeposited.toFixed(3)} ALGO</span>
+        </div>
       </div>
 
       {/* Deploy banner */}
@@ -78,9 +88,12 @@ export function App() {
             onDeposit={handleDeposit}
             onWithdraw={handleWithdraw}
             onComplete={handleComplete}
+            walletBalance={pool.walletBalance}
           />
         </div>
       )}
+
+      <ToastContainer />
     </>
   )
 }

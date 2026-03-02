@@ -12,8 +12,8 @@ export const INDEXER_CONFIG = {
   token: '',
 }
 
-const DEFAULT_POOL_APP_ID = 756343976
-const DEFAULT_POOL_APP_ADDRESS = '5MQPZZ3B56TL5724W2SJAGIY6BSJUBD4HFSUVXIL7NZI3LNNBCVF73TTLE'
+const DEFAULT_POOL_APP_ID = 756386181
+const DEFAULT_POOL_APP_ADDRESS = 'FMRABDCQUIZAVWTKIYAZEQZUWC6546MZZTOI2A3YG34PVY3SXBZH4NHQNY'
 
 function getPoolConfig() {
   const storedId = localStorage.getItem('privacy_pool_app_id')
@@ -26,17 +26,21 @@ function getPoolConfig() {
 
 export const CONTRACTS = {
   StealthRegistry: {
-    appId: 756343974,
-    appAddress: 'LLAKWAU47I5EFCPLJMIV2M74OYGXWY6EQYLYSZLPVZOTZVWFYBIVHW7UTI',
+    appId: 756386179,
+    appAddress: 'NIRHYSPNJHSHLQ3DKKMG7BGXM6L4FXATD4W6NGXO7MPQSA32YC6FFLO5FQ',
   },
   get PrivacyPool() { return getPoolConfig() },
   ShieldedPool: {
-    appId: 756343978,
-    appAddress: 'NJ3ZQNXFSKPUUFO4MSA26NKPDJVB3BGMA5ENIT2ZT6HT24GKJR374ERJDE',
+    appId: 756386192,
+    appAddress: 'PTTTWTO7OYNAKWE3IEBBY7D734IPD47QAOHNXR4BIP5PAKVUKTAVW6NOS4',
   },
   ConfidentialAsset: {
-    appId: 756343979,
-    appAddress: '5SBTJCUQAVAIZ4OZNLWCPVSQLY6JZGU7V4P6L5BBZGN4WGXYEFPC5LZFYI',
+    appId: 756386193,
+    appAddress: 'CH7INM5MMOLMB4ZYXVD7LVA2U3WS7CEPUMVCRXTFO4UVOP4T4X3X5AZ43Y',
+  },
+  ZkVerifier: {
+    appId: 756401238,
+    budgetHelperAppId: 756401228,
   },
 } as const
 
@@ -46,7 +50,8 @@ export const POOL_DENOMINATION = 1_000_000n
 // Fee estimates (in microAlgos) — network fees paid by sender, not deducted from transfer
 export const FEES = {
   deposit: 2_000n, // 0.002 ALGO — payment (0.001) + app call (0.001), only 3 box refs
-  withdraw: 9_000n, // 0.009 ALGO — fund LogicSig (0.001) + LogicSig verifier (0.006) + app call (0.002)
+  verifierCall: BigInt(228_000), // 0.228 ALGO — covers ~225 inner NoOp calls for opcode budget padding
+  withdraw: 230_000n, // 0.230 ALGO — verifier app call (0.228) + pool app call (0.002)
   minBalance: 100_000n, // 0.1 ALGO minimum balance
 }
 

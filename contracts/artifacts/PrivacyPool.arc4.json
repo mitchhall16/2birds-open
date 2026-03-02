@@ -21,10 +21,14 @@
     },
     {
       "name": "deposit",
-      "desc": "Deposit funds into the privacy pool.\nCommitment = MiMC(secret, nullifier) computed off-chain.\nMust be accompanied by a payment of any amount  0.",
+      "desc": "Deposit funds into the privacy pool.\nCommitment = MiMC(secret, nullifier) computed off-chain.\nmimcRoot = new MiMC Merkle root after inserting this commitment (computed off-chain).\nMust be accompanied by a payment of any amount  0.",
       "args": [
         {
           "name": "commitment",
+          "type": "byte[]"
+        },
+        {
+          "name": "mimcRoot",
           "type": "byte[]"
         }
       ],

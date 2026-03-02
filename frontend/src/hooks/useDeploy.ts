@@ -2,6 +2,8 @@ import { useState, useCallback } from 'react'
 import { useWallet } from '@txnlab/use-wallet-react'
 import algosdk from 'algosdk'
 import { ALGOD_CONFIG } from '../lib/config'
+import { useToast } from '../contexts/ToastContext'
+import { humanizeError } from '../lib/errorMessages'
 
 // Base64-encoded TEAL source from compiled ARC-56 artifact
 import arc56 from '../../../contracts/artifacts/PrivacyPool.arc56.json'
@@ -15,6 +17,7 @@ interface DeployState {
 
 export function useDeploy() {
   const { activeAddress, transactionSigner, algodClient } = useWallet()
+  const { addToast } = useToast()
   const [state, setState] = useState<DeployState>({
     deploying: false,
     appId: null,
@@ -24,6 +27,7 @@ export function useDeploy() {
 
   const deploy = useCallback(async () => {
     if (!activeAddress || !transactionSigner) {
+      addToast('error', 'Connect wallet first')
       setState(s => ({ ...s, error: 'Connect wallet first' }))
       return
     }
@@ -123,13 +127,15 @@ export function useDeploy() {
       localStorage.setItem('privacy_pool_app_id', appId.toString())
       localStorage.setItem('privacy_pool_app_address', appAddress)
 
+      addToast('success', `Contract deployed! App ID: ${appId}`)
       console.log(`Deployed PrivacyPool v2: appId=${appId}, appAddress=${appAddress}`)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Deploy failed'
+      const msg = humanizeError(err)
       console.error('Deploy error:', err)
+      addToast('error', msg)
       setState(s => ({ ...s, deploying: false, error: msg }))
     }
-  }, [activeAddress, transactionSigner, algodClient])
+  }, [activeAddress, transactionSigner, algodClient, addToast])
 
   return { ...state, deploy }
 }

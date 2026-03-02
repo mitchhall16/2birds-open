@@ -30,7 +30,7 @@ import {
   bytes32ToBigint,
 } from './packages/core/src/bn254.js';
 
-import { mimcHash, mimcHashSingle, mimcHashMulti } from './packages/core/src/mimc.js';
+import { mimcHash, mimcHashSingle, mimcHashMulti, initMimc } from './packages/core/src/mimc.js';
 
 // ─── Helpers ───
 
@@ -333,6 +333,7 @@ async function main() {
 ╚═══════════════════════════════════════════════════════════╝`);
 
   try {
+    await initMimc();
     demoCurveOps();
     await demoStealthAddresses();
     demoMerkleTree();

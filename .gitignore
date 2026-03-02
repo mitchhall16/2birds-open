@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.tsbuildinfo
+deployer-wallets.txt
 
 # Circuit build artifacts (large binary files)
 circuits/build/

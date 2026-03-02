@@ -8,6 +8,7 @@ import {
   NetworkConfigBuilder,
 } from '@txnlab/use-wallet-react'
 import { App } from './App'
+import { ToastProvider } from './contexts/ToastContext'
 import './styles/globals.css'
 import './styles/components.css'
 
@@ -33,8 +34,10 @@ const walletManager = new WalletManager({
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <WalletProvider manager={walletManager}>
-      <App />
-    </WalletProvider>
+    <ToastProvider>
+      <WalletProvider manager={walletManager}>
+        <App />
+      </WalletProvider>
+    </ToastProvider>
   </React.StrictMode>,
 )
