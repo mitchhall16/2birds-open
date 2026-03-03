@@ -53,6 +53,7 @@ class PrivacyPool extends Contract {
    */
   setPlonkVerifiers(withdrawAddr: Address, depositAddr: Address, privateSendAddr: Address): void {
     assert(this.txn.sender === this.app.creator);
+    assert(this.plonkVerifierAddr.value === Address.zeroAddress); // one-shot only
     this.plonkVerifierAddr.value = withdrawAddr;
     this.plonkDepositVerifierAddr.value = depositAddr;
     this.plonkPrivateSendVerifierAddr.value = privateSendAddr;
