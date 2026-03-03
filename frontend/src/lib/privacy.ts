@@ -1,6 +1,8 @@
 import { buildMimcSponge } from 'circomlibjs'
 import algosdk from 'algosdk'
 import { POOL_DENOMINATION, POOL_CONTRACTS, getPoolForTier } from './config'
+import { deriveViewKeypair } from './keys'
+import { scanChainForNotes } from './scanner'
 
 // BN254 scalar field modulus
 const BN254_R = 21888242871839275222246405745257275088548364400416034343698204186575808495617n
@@ -453,7 +455,7 @@ export function addressToScalar(addr: string): bigint {
   return n % BN254_R
 }
 
-/** Encode a Groth16 proof as 256 bytes for the LogicSig verifier (arg 0) */
+/** Encode a Groth16 proof as 256 bytes for the app-based verifier (arg 0) */
 export function encodeProofForVerifier(proof: {
   pi_a: [bigint, bigint]
   pi_b: [[bigint, bigint], [bigint, bigint]]
@@ -471,6 +473,46 @@ export function encodeProofForVerifier(proof: {
   result.set(scalarToBytes(proof.pi_c[0]), 192)
   result.set(scalarToBytes(proof.pi_c[1]), 224)
   return result
+}
+
+// ── PLONK Proof Support ─────────────────
+
+/** Which proof system to use — controlled by config */
+export type ProofSystem = 'groth16' | 'plonk'
+
+/**
+ * Generate a ZK proof using the configured proof system.
+ * Abstracts over snarkjs.groth16.fullProve vs snarkjs.plonk.fullProve.
+ */
+export async function generateProof(
+  system: ProofSystem,
+  circuitInput: Record<string, string | string[] | number[]>,
+  wasmPath: string,
+  zkeyPath: string,
+): Promise<{ proof: any; publicSignals: string[] }> {
+  const snarkjs = await import('snarkjs')
+  if (system === 'plonk') {
+    return snarkjs.plonk.fullProve(circuitInput, wasmPath, zkeyPath)
+  }
+  return snarkjs.groth16.fullProve(circuitInput, wasmPath, zkeyPath)
+}
+
+/**
+ * Parse a Groth16 proof from snarkjs output into the format expected by encodeProofForVerifier.
+ */
+export function parseGroth16Proof(proof: any): {
+  pi_a: [bigint, bigint]
+  pi_b: [[bigint, bigint], [bigint, bigint]]
+  pi_c: [bigint, bigint]
+} {
+  return {
+    pi_a: [BigInt(proof.pi_a[0]), BigInt(proof.pi_a[1])],
+    pi_b: [
+      [BigInt(proof.pi_b[0][0]), BigInt(proof.pi_b[0][1])],
+      [BigInt(proof.pi_b[1][0]), BigInt(proof.pi_b[1][1])],
+    ],
+    pi_c: [BigInt(proof.pi_c[0]), BigInt(proof.pi_c[1])],
+  }
 }
 
 /** Encode 4 deposit public signals as 128 bytes for the deposit verifier (arg 1) */
@@ -559,6 +601,18 @@ let cachedMasterKey: bigint | null = null
 
 /** Whether the master key was deterministically derived (signData) vs random fallback */
 let masterKeyDeterministic = false
+
+/** Cached view keypair (derived from master key) */
+let cachedViewKeypair: { privateKey: Uint8Array; publicKey: Uint8Array } | null = null
+
+/** Get or derive the view keypair from the cached master key */
+export async function getViewKeypair(): Promise<{ privateKey: Uint8Array; publicKey: Uint8Array } | null> {
+  if (cachedViewKeypair) return cachedViewKeypair
+  const mk = await getCachedMasterKey()
+  if (!mk) return null
+  cachedViewKeypair = deriveViewKeypair(mk)
+  return cachedViewKeypair
+}
 
 /** Per-tab ephemeral key for encrypting master key in sessionStorage */
 let tabEncryptionKey: CryptoKey | null = null
@@ -657,6 +711,7 @@ export async function deriveMasterKey(
 
   // Cache in memory and encrypted in sessionStorage
   cachedMasterKey = masterKey
+  cachedViewKeypair = deriveViewKeypair(masterKey)
   const encrypted = await encryptMasterKey(masterKey)
   sessionStorage.setItem(MASTER_KEY_SESSION, encrypted)
 
@@ -944,6 +999,7 @@ export async function deriveMasterKeyFromPassword(password: string): Promise<big
     const masterKey = bytesToScalar(derived) % BN254_R
     masterKeyDeterministic = true
     cachedMasterKey = masterKey
+    cachedViewKeypair = deriveViewKeypair(masterKey)
     const encrypted = await encryptMasterKey(masterKey)
     sessionStorage.setItem(MASTER_KEY_SESSION, encrypted)
     return masterKey
@@ -962,6 +1018,7 @@ export async function deriveMasterKeyFromPassword(password: string): Promise<big
     const masterKey = bytesToScalar(derived) % BN254_R
     masterKeyDeterministic = true
     cachedMasterKey = masterKey
+    cachedViewKeypair = deriveViewKeypair(masterKey)
     const encrypted = await encryptMasterKey(masterKey)
     sessionStorage.setItem(MASTER_KEY_SESSION, encrypted)
     return masterKey
@@ -971,8 +1028,59 @@ export async function deriveMasterKeyFromPassword(password: string): Promise<big
 /** Clear master key cache (on wallet disconnect) */
 export function clearMasterKey(): void {
   cachedMasterKey = null
+  cachedViewKeypair = null
   masterKeyDeterministic = false
   sessionStorage.removeItem(MASTER_KEY_SESSION)
+}
+
+// ── Chain-Based Note Recovery (HPKE) ────
+
+/**
+ * Recover notes from on-chain HPKE envelopes using the view keypair.
+ * Scans all pool app transactions for encrypted notes and merges with localStorage.
+ */
+export async function recoverNotesFromChain(
+  viewKeypair: { privateKey: Uint8Array; publicKey: Uint8Array },
+  poolAppIds: number[],
+  fromRound?: number,
+  onProgress?: (round: number, found: number) => void,
+): Promise<{ recovered: DepositNote[]; newNotes: number }> {
+  const chainNotes = await scanChainForNotes(viewKeypair, poolAppIds, fromRound, onProgress)
+
+  // Merge with existing localStorage notes (deduplicate by commitment + appId)
+  const existing = await loadNotes()
+  const newNotes = chainNotes.filter(cn =>
+    !existing.some(en => en.commitment === cn.commitment && en.appId === cn.appId),
+  )
+
+  if (newNotes.length > 0) {
+    const all = await loadAllNotesAsync()
+    for (const note of newNotes) {
+      all.push(note)
+    }
+    await saveAllNotesAsync(all)
+  }
+
+  return { recovered: chainNotes, newNotes: newNotes.length }
+}
+
+// ── Stale Note Detection ────────────────
+
+/**
+ * Find notes that are stale — pool has had many operations since note was created
+ * but the note hasn't been touched. These are easier to identify by chain analysis.
+ */
+export function findStaleNotes(
+  notes: DepositNote[],
+  poolNextIndices: Map<number, number>,
+  threshold: number = 20,
+): DepositNote[] {
+  return notes.filter(note => {
+    if (!note.appId || note.leafIndex < 0) return false
+    const nextIndex = poolNextIndices.get(note.appId)
+    if (nextIndex === undefined) return false
+    return nextIndex - note.leafIndex >= threshold
+  })
 }
 
 // ── Utilities ───────────────────────────

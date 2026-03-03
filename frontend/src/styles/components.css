@@ -1578,6 +1578,240 @@
   }
 }
 
+/* ── Churn Prompt ──────────────────────────── */
+
+.churn-prompt {
+  background: rgba(255, 170, 51, 0.06);
+  border: 1px solid rgba(255, 170, 51, 0.25);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
+.churn-prompt__title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--warning, #ffaa33);
+  margin-bottom: 6px;
+}
+
+.churn-prompt__body {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.churn-prompt .manage-btn--recover {
+  width: 100%;
+}
+
+/* ── Subsidy Selector ─────────────────────── */
+
+.subsidy-selector {
+  margin-bottom: 12px;
+}
+
+.subsidy-selector__label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.subsidy-selector__row {
+  display: flex;
+  gap: 6px;
+}
+
+.subsidy-btn {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: var(--radius-sm);
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+}
+
+.subsidy-btn:hover {
+  border-color: #ffffff20;
+  color: var(--text-primary);
+}
+
+.subsidy-btn--active {
+  background: rgba(0, 212, 170, 0.08);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.subsidy-selector__hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-top: 6px;
+  opacity: 0.8;
+}
+
+/* ── Cost row: subsidized values ─────────── */
+
+.cost-row__value--subsidized {
+  color: var(--accent) !important;
+  font-weight: 600;
+}
+
+.cost-row__value--subsidy {
+  color: var(--accent);
+}
+
+/* ── Batch Countdown ──────────────────────── */
+
+.batch-countdown {
+  margin: 16px 0;
+  text-align: center;
+}
+
+.batch-countdown__time {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.05em;
+}
+
+.batch-countdown__label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  margin-bottom: 12px;
+}
+
+.batch-countdown__skip {
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.batch-countdown__skip:hover {
+  color: var(--warning, #ffaa33);
+  border-color: var(--warning, #ffaa33);
+}
+
+/* ── Anonymity Indicator ──────────────────────── */
+
+.anonymity-indicator {
+  background: var(--bg-deep);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.anonymity-indicator__title {
+  font-weight: 200;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 8px;
+}
+
+.anonymity-indicator__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.anonymity-indicator__tier {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 70px;
+}
+
+.anonymity-indicator__count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.anonymity-indicator__level {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.anonymity-indicator__level--good {
+  color: var(--accent);
+  background: rgba(0, 212, 170, 0.1);
+}
+
+.anonymity-indicator__level--moderate {
+  color: var(--warning, #ffaa33);
+  background: rgba(255, 170, 51, 0.1);
+}
+
+.anonymity-indicator__level--low {
+  color: var(--danger);
+  background: rgba(255, 68, 102, 0.1);
+}
+
+/* ── Note Backup ─────────────────────────────── */
+
+.note-backup {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.note-backup__header {
+  font-family: var(--font-heading);
+  font-weight: 600;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.note-backup__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.note-backup__result {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.note-backup__hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-top: 6px;
+  opacity: 0.7;
+}
+
 /* ── Responsive ─────────────────────────────── */
 
 @media (max-width: 900px) {

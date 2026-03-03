@@ -14,14 +14,17 @@ class PrivacyPool extends Contract {
   insertionVerifierAppId = GlobalStateKey<uint64>({ key: 'ins_vrf' });
   privateSendVerifierAppId = GlobalStateKey<uint64>({ key: 'ps_vrf' });
 
+  // PLONK LogicSig verifier addresses (set to zero-address to use app-based verifier)
+  plonkVerifierAddr = GlobalStateKey<Address>({ key: 'pv_addr' });
+  plonkDepositVerifierAddr = GlobalStateKey<Address>({ key: 'pd_addr' });
+  plonkPrivateSendVerifierAddr = GlobalStateKey<Address>({ key: 'pp_addr' });
+
   // Box storage — no on-chain tree; MiMC root is computed off-chain and passed in
   commitments = BoxMap<uint64, bytes>({ prefix: 'cmt' });
   nullifiers = BoxMap<bytes, bytes>({ prefix: 'null' });
   rootHistory = BoxMap<uint64, bytes>({ prefix: 'root' });
   knownRoots = BoxMap<bytes, bytes>({ prefix: 'kr' });
 
-  // Store deposit amounts per leaf index
-  depositAmounts = BoxMap<uint64, uint64>({ prefix: 'amt' });
 
   /**
    * Initialize the privacy pool.
@@ -38,8 +41,21 @@ class PrivacyPool extends Contract {
     // MiMC empty tree root for depth 16 (precomputed: all zero leaves)
     this.currentRoot.value = hex('1a781c1159b0f76ac76b5d8fe1ddf457f75d0033fef4d6f44f2c7787825c3229');
 
-    // Note: initial root is NOT stored in knownRoots box — isKnownRoot() checks
-    // currentRoot first, so it's always valid. This avoids requiring MBR at creation.
+    // PLONK verifier addresses default to zero (use app-based verifier until set)
+    this.plonkVerifierAddr.value = Address.zeroAddress;
+    this.plonkDepositVerifierAddr.value = Address.zeroAddress;
+    this.plonkPrivateSendVerifierAddr.value = Address.zeroAddress;
+  }
+
+  /**
+   * Set PLONK LogicSig verifier addresses (creator only, one-time setup).
+   * Once set, the contract will accept LogicSig-based verification instead of app calls.
+   */
+  setPlonkVerifiers(withdrawAddr: Address, depositAddr: Address, privateSendAddr: Address): void {
+    assert(this.txn.sender === this.app.creator);
+    this.plonkVerifierAddr.value = withdrawAddr;
+    this.plonkDepositVerifierAddr.value = depositAddr;
+    this.plonkPrivateSendVerifierAddr.value = privateSendAddr;
   }
 
   /**
@@ -52,16 +68,30 @@ class PrivacyPool extends Contract {
     assert(len(commitment) === 32);
     assert(len(mimcRoot) === 32);
 
-    // Verify insertion proof in a preceding transaction
+    // Verify insertion proof in a preceding transaction.
+    // Supports two modes:
+    //   1. App-based verifier (Groth16): preceding txn is an app call to insertionVerifierAppId
+    //   2. LogicSig verifier (PLONK): preceding txn is a payment signed by plonkDepositVerifierAddr
     assert(this.txn.groupIndex > 1);
     const verifierTxn = this.txnGroup[this.txn.groupIndex - 2];
-    assert(verifierTxn.typeEnum === TransactionType.ApplicationCall);
-    assert(verifierTxn.applicationID === AppID.fromUint64(this.insertionVerifierAppId.value));
-    assert(verifierTxn.sender === this.txn.sender);
+
+    if (this.plonkDepositVerifierAddr.value !== Address.zeroAddress
+        && verifierTxn.typeEnum === TransactionType.Payment
+        && verifierTxn.sender === this.plonkDepositVerifierAddr.value) {
+      // PLONK LogicSig mode: verifier ran as LogicSig, signals in Note field
+    } else {
+      // App-based verifier mode (Groth16)
+      assert(verifierTxn.typeEnum === TransactionType.ApplicationCall);
+      assert(verifierTxn.applicationID === AppID.fromUint64(this.insertionVerifierAppId.value));
+      assert(verifierTxn.sender === this.txn.sender);
+    }
 
     // Verify all 4 public signals match
     // Signals layout: 0-32 oldRoot, 32-64 newRoot, 64-96 commitment, 96-128 leafIndex
-    const signals = verifierTxn.applicationArgs[1];
+    // In app mode: signals are in applicationArgs[1]. In LogicSig mode: signals are in Note field.
+    const signals = verifierTxn.typeEnum === TransactionType.Payment
+      ? verifierTxn.note
+      : verifierTxn.applicationArgs[1];
     assert(extract3(signals, 0, 32) === this.currentRoot.value);
     assert(extract3(signals, 32, 32) === mimcRoot);
     assert(extract3(signals, 64, 32) === commitment);
@@ -88,9 +118,6 @@ class PrivacyPool extends Contract {
     assert(leafIndex < (1 << TREE_DEPTH));
     this.commitments(leafIndex).value = commitment;
 
-    // Store the deposited amount for this leaf
-    this.depositAmounts(leafIndex).value = payTxn.amount;
-
     // Accept the verified MiMC root
     this.currentRoot.value = mimcRoot;
 
@@ -111,8 +138,6 @@ class PrivacyPool extends Contract {
     this.knownRoots(mimcRoot).value = hex('01');
     this.rootHistoryIndex.value = histIdx + 1;
 
-    // Log deposit event
-    log(concat(hex('6465706f736974'), commitment));
   }
 
   /**
@@ -138,16 +163,30 @@ class PrivacyPool extends Contract {
     // 3. Record nullifier as spent
     this.nullifiers(nullifierHash).value = hex('01');
 
-    // 4. Verify ZK verifier app call is the preceding transaction in this group
+    // 4. Verify ZK verifier is the preceding transaction in this group.
+    // Supports two modes:
+    //   1. App-based verifier (Groth16): app call to verifierAppId
+    //   2. LogicSig verifier (PLONK): payment signed by plonkVerifierAddr
     assert(this.txn.groupIndex > 0);
     const prevTxn = this.txnGroup[this.txn.groupIndex - 1];
-    assert(prevTxn.typeEnum === TransactionType.ApplicationCall);
-    assert(prevTxn.applicationID === AppID.fromUint64(this.verifierAppId.value));
-    assert(prevTxn.sender === this.txn.sender);
+
+    if (this.plonkVerifierAddr.value !== Address.zeroAddress
+        && prevTxn.typeEnum === TransactionType.Payment
+        && prevTxn.sender === this.plonkVerifierAddr.value) {
+      // PLONK LogicSig mode
+    } else {
+      // App-based verifier mode (Groth16)
+      assert(prevTxn.typeEnum === TransactionType.ApplicationCall);
+      assert(prevTxn.applicationID === AppID.fromUint64(this.verifierAppId.value));
+      assert(prevTxn.sender === this.txn.sender);
+    }
 
     // 5. Verify ALL public signals match (prevents front-running / proof replay attacks)
     // Signals layout: 0-32 root, 32-64 nullifierHash, 64-96 recipient, 96-128 relayer, 128-160 fee, 160-192 amount
-    const signals = prevTxn.applicationArgs[1];
+    // In app mode: signals in applicationArgs[1]. In LogicSig mode: signals in Note field.
+    const signals = prevTxn.typeEnum === TransactionType.Payment
+      ? prevTxn.note
+      : prevTxn.applicationArgs[1];
     assert(extract3(signals, 0, 32) === root);
     assert(extract3(signals, 32, 32) === nullifierHash);
     assert(extract3(signals, 64, 32) === recipientSignal);
@@ -193,7 +232,6 @@ class PrivacyPool extends Contract {
       }
     }
 
-    log(concat(hex('7769746864726177'), nullifierHash));
   }
 
   /**
@@ -215,17 +253,28 @@ class PrivacyPool extends Contract {
     assert(len(mimcRoot) === 32);
     assert(len(nullifierHash) === 32);
 
-    // Verify combined privateSend verifier call at groupIndex - 2
+    // Verify combined privateSend verifier call at groupIndex - 2.
+    // Supports app-based (Groth16) or LogicSig (PLONK) verification.
     assert(this.txn.groupIndex > 1);
     const verifierTxn = this.txnGroup[this.txn.groupIndex - 2];
-    assert(verifierTxn.typeEnum === TransactionType.ApplicationCall);
-    assert(verifierTxn.applicationID === AppID.fromUint64(this.privateSendVerifierAppId.value));
-    assert(verifierTxn.sender === this.txn.sender);
+
+    if (this.plonkPrivateSendVerifierAddr.value !== Address.zeroAddress
+        && verifierTxn.typeEnum === TransactionType.Payment
+        && verifierTxn.sender === this.plonkPrivateSendVerifierAddr.value) {
+      // PLONK LogicSig mode
+    } else {
+      // App-based verifier mode (Groth16)
+      assert(verifierTxn.typeEnum === TransactionType.ApplicationCall);
+      assert(verifierTxn.applicationID === AppID.fromUint64(this.privateSendVerifierAppId.value));
+      assert(verifierTxn.sender === this.txn.sender);
+    }
 
     // Verify all 9 public signals match
     // Layout: 0-32 oldRoot, 32-64 newRoot, 64-96 commitment, 96-128 leafIndex,
     //         128-160 nullifierHash, 160-192 recipient, 192-224 relayer, 224-256 fee, 256-288 amount
-    const signals = verifierTxn.applicationArgs[1];
+    const signals = verifierTxn.typeEnum === TransactionType.Payment
+      ? verifierTxn.note
+      : verifierTxn.applicationArgs[1];
     assert(extract3(signals, 0, 32) === this.currentRoot.value);
     assert(extract3(signals, 32, 32) === mimcRoot);
     assert(extract3(signals, 64, 32) === commitment);
@@ -260,7 +309,6 @@ class PrivacyPool extends Contract {
     // Store commitment and update tree
     assert(leafIndex < (1 << TREE_DEPTH));
     this.commitments(leafIndex).value = commitment;
-    this.depositAmounts(leafIndex).value = payTxn.amount;
     this.currentRoot.value = mimcRoot;
     this.nextIndex.value = leafIndex + 1;
 
@@ -315,7 +363,6 @@ class PrivacyPool extends Contract {
       }
     }
 
-    log(concat(hex('707269766174655f73656e64'), commitment));
   }
 
   /**

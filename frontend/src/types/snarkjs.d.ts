@@ -20,4 +20,20 @@ declare module 'snarkjs' {
       proof: any,
     ): Promise<boolean>
   }
+
+  export const plonk: {
+    fullProve(
+      input: Record<string, string | string[] | number[]>,
+      wasmPath: string,
+      zkeyPath: string,
+    ): Promise<{
+      proof: any
+      publicSignals: string[]
+    }>
+    verify(
+      vkey: any,
+      publicSignals: string[],
+      proof: any,
+    ): Promise<boolean>
+  }
 }

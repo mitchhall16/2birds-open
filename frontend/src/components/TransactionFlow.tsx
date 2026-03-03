@@ -2,10 +2,13 @@ import { useState, useEffect, useRef } from 'react'
 import { useWallet } from '@txnlab/use-wallet-react'
 import { useTransaction, type TxStage } from '../hooks/useTransaction'
 import { CostBreakdown } from './CostBreakdown'
-import { txnUrl, DENOMINATION_TIERS, type DenominationTier } from '../lib/config'
-import { loadNotes, removeNote, deriveMasterKey, deriveMasterKeyFromPassword, recoverNotes, initMimc, PasswordRequiredError, hasPasswordKey, type DepositNote } from '../lib/privacy'
+import { txnUrl, DENOMINATION_TIERS, type DenominationTier, SUBSIDY_TIERS, TREASURY_ADDRESS } from '../lib/config'
+import { loadNotes, removeNote, deriveMasterKey, deriveMasterKeyFromPassword, getCachedMasterKey, recoverNotes, initMimc, PasswordRequiredError, hasPasswordKey, type DepositNote } from '../lib/privacy'
 import { PasswordModal } from './PasswordModal'
-import { ALGOD_CONFIG } from '../lib/config'
+import { NoteBackup } from './NoteBackup'
+import { ALGOD_CONFIG, POOL_CONTRACTS } from '../lib/config'
+import { isPrivacyAddress } from '../lib/address'
+import { privacyAddressFromWallet } from '../lib/address'
 import algosdk from 'algosdk'
 
 interface TransactionFlowProps {
@@ -15,7 +18,7 @@ interface TransactionFlowProps {
   walletBalance?: number
 }
 
-type Tab = 'deposit' | 'send' | 'manage'
+type Tab = 'deposit' | 'send' | 'manage' | 'convert'
 
 export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalance }: TransactionFlowProps) {
   const { activeAddress, signData, algodClient } = useWallet()
@@ -35,13 +38,35 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
   const [pendingAction, setPendingAction] = useState<(() => Promise<void>) | null>(null)
   const [passwordError, setPasswordError] = useState('')
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false)
+  const [selectedSubsidy, setSelectedSubsidy] = useState<bigint>(0n)
   const prevStage = useRef<TxStage>('idle')
 
-  // Load notes async on mount
+  // Load notes, treasury balance, and pool indices on mount
   useEffect(() => { loadNotes().then(setNotes).catch(console.error) }, [])
+  useEffect(() => { tx.refreshTreasuryBalance().catch(console.error) }, [])
+  useEffect(() => { tx.refreshStaleNotes().catch(console.error) }, []) // also populates poolNextIndices
+
+  const [scanningChain, setScanningChain] = useState(false)
+  const [scanResult, setScanResult] = useState<{ recovered: number; newNotes: number } | null>(null)
+  const [privacyAddress, setPrivacyAddress] = useState<string | null>(null)
+
+  // Derive privacy address when wallet is connected
+  useEffect(() => {
+    if (!activeAddress) { setPrivacyAddress(null); return }
+    getCachedMasterKey().then(mk => {
+      if (mk) setPrivacyAddress(privacyAddressFromWallet(activeAddress, mk))
+    }).catch(() => {})
+  }, [activeAddress])
+
+  // Refresh stale notes when switching to manage tab
+  useEffect(() => {
+    if (tab === 'manage' && activeAddress) {
+      tx.refreshStaleNotes().catch(console.error)
+    }
+  }, [tab, activeAddress])
 
   const tierAmount = Number(selectedTier.microAlgos) / 1_000_000
-  const isValidDest = destination.length > 0 && algosdk.isValidAddress(destination)
+  const isValidDest = destination.length > 0 && (algosdk.isValidAddress(destination) || isPrivacyAddress(destination))
   const isValidManageDest = manageDestination.length > 0 && algosdk.isValidAddress(manageDestination)
 
   const isIdle = tx.stage === 'idle' || tx.stage === 'deposit_complete' || tx.stage === 'withdraw_complete'
@@ -102,12 +127,12 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
 
   async function handleDeposit() {
     if (!canDeposit) return
-    await withPasswordFallback(() => tx.deposit(selectedTier.microAlgos))
+    await withPasswordFallback(() => tx.deposit(selectedTier.microAlgos, false, selectedSubsidy))
   }
 
   async function handleSend() {
     if (!canSend) return
-    await withPasswordFallback(() => tx.privateSend(selectedTier.microAlgos, destination))
+    await withPasswordFallback(() => tx.privateSend(selectedTier.microAlgos, destination, false, selectedSubsidy))
   }
 
   async function handleManageSend(noteCommitment: bigint) {
@@ -156,6 +181,26 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
     }
   }
 
+  async function handleChainScan() {
+    if (scanningChain) return
+    setScanningChain(true)
+    setScanResult(null)
+    try {
+      await withPasswordFallback(async () => {
+        await initMimc()
+        await deriveMasterKey(signData)
+        const result = await tx.scanForNotes()
+        setScanResult(result)
+        refreshNotes()
+      })
+    } catch (err) {
+      console.error('Chain scan failed:', err)
+      setScanResult({ recovered: 0, newNotes: 0 })
+    } finally {
+      setScanningChain(false)
+    }
+  }
+
   async function handleRebuildTrees() {
     if (rebuildingTrees) return
     setRebuildingTrees(true)
@@ -173,7 +218,7 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
     }
   }
 
-  const isProcessing = tx.stage === 'depositing' || tx.stage === 'withdrawing' || tx.stage === 'generating_proof'
+  const isProcessing = tx.stage === 'depositing' || tx.stage === 'withdrawing' || tx.stage === 'generating_proof' || tx.stage === 'waiting_batch'
   const isDone = tx.stage === 'deposit_complete' || tx.stage === 'withdraw_complete'
   const isIdleUI = !isProcessing && !isDone && tx.stage !== 'error'
 
@@ -190,6 +235,9 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
         </button>
         <button className={`tx-tab ${tab === 'manage' ? 'tx-tab--active' : ''}`} onClick={() => { setTab('manage'); refreshNotes() }}>
           Manage{notes.length > 0 ? ` (${notes.length})` : ''}
+        </button>
+        <button className={`tx-tab ${tab === 'convert' ? 'tx-tab--active' : ''}`} onClick={() => setTab('convert')}>
+          Convert
         </button>
       </div>
 
@@ -220,13 +268,16 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                 <input
                   className={`tx-field__input ${destination.length > 0 && !isValidDest ? 'tx-field__input--invalid' : ''}`}
                   type="text"
-                  placeholder="Algorand address..."
+                  placeholder="priv1... address or Algorand address..."
                   value={destination}
                   onChange={(e) => setDestination(e.target.value.trim())}
                   spellCheck={false}
                 />
                 {destination.length > 0 && !isValidDest && (
-                  <div className="tx-field__error">Invalid Algorand address</div>
+                  <div className="tx-field__error">Invalid address (use priv1... or Algorand address)</div>
+                )}
+                {destination.length > 0 && isValidDest && isPrivacyAddress(destination) && (
+                  <div className="tx-field__hint">Privacy address detected — note will be encrypted for recipient</div>
                 )}
               </div>
               {tx.relayerAvailable && (
@@ -259,12 +310,75 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
           )}
 
           {tab === 'deposit' && (
-            <div className="tx-info-box">
-              <strong>How it works:</strong> Depositing shields your ALGO in the privacy pool. To send it to another address later, go to <button className="tx-info-link" onClick={() => setTab('manage')}>Manage</button> and withdraw. Withdrawal fee is ~0.23 ALGO.
+            <>
+              <div className="tx-info-box">
+                <strong>How it works:</strong> Depositing shields your ALGO in the privacy pool. To send it to another address later, go to <button className="tx-info-link" onClick={() => setTab('manage')}>Manage</button> and withdraw.
+              </div>
+
+              {/* Anonymity set indicator */}
+              {tx.poolNextIndices.size > 0 && (
+                <div className="anonymity-indicator">
+                  <div className="anonymity-indicator__title">Pool Activity</div>
+                  {DENOMINATION_TIERS.map(tier => {
+                    const pool = POOL_CONTRACTS[tier.microAlgos.toString()]
+                    if (!pool) return null
+                    const count = tx.poolNextIndices.get(pool.appId) ?? 0
+                    const level = count >= 50 ? 'good' : count >= 10 ? 'moderate' : 'low'
+                    return (
+                      <div key={tier.label} className="anonymity-indicator__row">
+                        <span className="anonymity-indicator__tier">{tier.label} ALGO</span>
+                        <span className="anonymity-indicator__count">{count} deposits</span>
+                        <span className={`anonymity-indicator__level anonymity-indicator__level--${level}`}>
+                          {level === 'good' ? 'Good privacy' : level === 'moderate' ? 'Moderate' : 'Low privacy'}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Subsidy selector — help grow the pool */}
+          {!!TREASURY_ADDRESS && (
+            <div className="subsidy-selector">
+              <div className="subsidy-selector__label">
+                {tx.subsidyActive
+                  ? 'Protocol fee subsidized! Pay it forward?'
+                  : 'Help grow the pool (optional)'}
+              </div>
+              <div className="subsidy-selector__row">
+                <button
+                  className={`subsidy-btn ${selectedSubsidy === 0n ? 'subsidy-btn--active' : ''}`}
+                  onClick={() => setSelectedSubsidy(0n)}
+                >
+                  None
+                </button>
+                {SUBSIDY_TIERS.map(tier => (
+                  <button
+                    key={tier.label}
+                    className={`subsidy-btn ${selectedSubsidy === tier.microAlgos ? 'subsidy-btn--active' : ''}`}
+                    onClick={() => setSelectedSubsidy(tier.microAlgos)}
+                  >
+                    +{tier.label}
+                  </button>
+                ))}
+              </div>
+              {selectedSubsidy > 0n && (
+                <div className="subsidy-selector__hint">
+                  Reduces fees for the next user, attracting more deposits and strengthening privacy for everyone.
+                </div>
+              )}
             </div>
           )}
 
-          <CostBreakdown amount={tierAmount} mode={tab === 'deposit' ? 'deposit' : 'send'} walletBalance={walletBalance} />
+          <CostBreakdown
+            amount={tierAmount}
+            mode={tab === 'deposit' ? 'deposit' : 'send'}
+            walletBalance={walletBalance}
+            subsidyMicroAlgos={selectedSubsidy}
+            subsidyActive={tx.subsidyActive}
+          />
 
           <div className="tx-flow__spacer" />
 
@@ -338,7 +452,7 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                             </label>
                           )}
                           {isValidManageDest && (
-                            <CostBreakdown amount={noteAlgo} mode="withdraw" />
+                            <CostBreakdown amount={noteAlgo} mode="withdraw" subsidyActive={tx.subsidyActive} />
                           )}
                           <div className="manage-note__actions">
                             <button
@@ -398,6 +512,48 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
             </>
           )}
 
+          {/* Churn prompt for stale notes */}
+          {tx.staleNotes.length > 0 && (
+            <div className="churn-prompt">
+              <div className="churn-prompt__title">Privacy refresh recommended</div>
+              <div className="churn-prompt__body">
+                {tx.staleNotes.length} note{tx.staleNotes.length > 1 ? 's' : ''} sitting
+                idle while pool activity continued. Churn to refresh position.
+              </div>
+              <button
+                className="manage-btn manage-btn--recover"
+                onClick={() => {
+                  withPasswordFallback(() => tx.churnNote(tx.staleNotes[0]))
+                }}
+                disabled={isProcessing}
+              >
+                Churn oldest note
+              </button>
+            </div>
+          )}
+
+          {/* Privacy address display */}
+          {privacyAddress && (
+            <div className="manage-privacy-address">
+              <div className="manage-privacy-address__label">Your Privacy Address</div>
+              <div className="manage-privacy-address__value" title={privacyAddress}>
+                {privacyAddress.slice(0, 20)}...{privacyAddress.slice(-8)}
+              </div>
+              <button
+                className="manage-btn manage-btn--copy"
+                onClick={() => { navigator.clipboard.writeText(privacyAddress); }}
+              >
+                Copy
+              </button>
+              <div className="manage-privacy-address__hint">
+                Share this address to receive private transfers with encrypted notes.
+              </div>
+            </div>
+          )}
+
+          {/* Note backup */}
+          <NoteBackup notes={notes} onImport={refreshNotes} />
+
           <div className="manage-recovery-section">
             <div className="manage-recovery-section__header">Recovery</div>
             <div className="manage-recovery-section__desc">
@@ -429,6 +585,29 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
 
             <div className="manage-recovery-item">
               <button
+                className={`manage-btn manage-btn--recover ${scanningChain ? 'manage-btn--loading' : ''}`}
+                onClick={handleChainScan}
+                disabled={scanningChain || !activeAddress}
+                style={{ width: '100%' }}
+              >
+                {scanningChain ? 'Scanning encrypted notes...' : 'Scan Chain (HPKE)'}
+              </button>
+              <div className="manage-recovery-item__desc">
+                Scans on-chain transaction notes for HPKE-encrypted deposits sent to your view key.
+              </div>
+            </div>
+            {scanResult && (
+              <div className="manage-recovery-result">
+                {scanResult.newNotes > 0
+                  ? `Found ${scanResult.newNotes} new encrypted note${scanResult.newNotes > 1 ? 's' : ''} (${scanResult.recovered} total on-chain)`
+                  : scanResult.recovered > 0
+                    ? `All ${scanResult.recovered} on-chain notes already imported`
+                    : 'No encrypted notes found for your view key'}
+              </div>
+            )}
+
+            <div className="manage-recovery-item">
+              <button
                 className={`manage-btn manage-btn--recover ${rebuildingTrees ? 'manage-btn--loading' : ''}`}
                 onClick={handleRebuildTrees}
                 disabled={rebuildingTrees}
@@ -444,10 +623,52 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
         </>
       )}
 
+      {/* ── Convert tab (split/combine) ── */}
+      {tab === 'convert' && isIdleUI && (
+        <div className="tx-convert-section">
+          <div className="tx-info-box">
+            <strong>Split &amp; Combine</strong> — Convert between denomination tiers across pools.
+            Split breaks a larger note into two smaller ones. Combine merges two smaller notes into one larger note.
+          </div>
+          <div className="tx-convert-grid">
+            <div className="tx-convert-card">
+              <div className="tx-convert-card__title">Split</div>
+              <div className="tx-convert-card__desc">1.0 ALGO → 2 × 0.5 ALGO</div>
+              <div className="tx-convert-card__desc">0.5 ALGO → 5 × 0.1 ALGO (future)</div>
+              <button className="manage-btn manage-btn--recover" disabled style={{ width: '100%', marginTop: 12 }}>
+                Coming Soon
+              </button>
+              <div className="tx-convert-card__note">Requires split circuit deployment</div>
+            </div>
+            <div className="tx-convert-card">
+              <div className="tx-convert-card__title">Combine</div>
+              <div className="tx-convert-card__desc">2 × 0.5 ALGO → 1.0 ALGO</div>
+              <div className="tx-convert-card__desc">5 × 0.1 ALGO → 0.5 ALGO (future)</div>
+              <button className="manage-btn manage-btn--recover" disabled style={{ width: '100%', marginTop: 12 }}>
+                Coming Soon
+              </button>
+              <div className="tx-convert-card__note">Requires combine circuit deployment</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── In-progress (shared across all tabs) ── */}
       {isProcessing && (
         <div className="tx-status">
           <div className="tx-status__text">{tx.message}</div>
+          {tx.stage === 'waiting_batch' && tx.batchCountdown && (
+            <div className="batch-countdown">
+              <div className="batch-countdown__time">{tx.batchCountdown}</div>
+              <div className="batch-countdown__label">until next batch window</div>
+              <button
+                className="batch-countdown__skip"
+                onClick={() => tx.skipBatchWait()}
+              >
+                Skip (reduced privacy)
+              </button>
+            </div>
+          )}
           {tx.stage === 'generating_proof' && (
             <div className="tx-proof-progress">
               <div className="tx-proof-progress__bar">
@@ -462,7 +683,7 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
             </a>
           )}
           <button className="tx-execute tx-execute--loading" disabled style={{ marginTop: 20 }}>
-            {tx.stage === 'depositing' ? 'Depositing...' : tx.stage === 'generating_proof' ? 'Proving...' : 'Sending...'}
+            {tx.stage === 'waiting_batch' ? 'Waiting...' : tx.stage === 'depositing' ? 'Depositing...' : tx.stage === 'generating_proof' ? 'Proving...' : 'Sending...'}
           </button>
         </div>
       )}
