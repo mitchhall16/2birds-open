@@ -27,6 +27,13 @@ const walletManager = new WalletManager({
     WalletId.PERA,
     WalletId.DEFLY,
     WalletId.LUTE,
+    {
+      id: WalletId.WALLETCONNECT,
+      options: {
+        projectId: '2e4ff65c141a7b579c4faa40fab12821',
+        themeMode: 'dark' as const,
+      },
+    },
   ],
   networks,
   defaultNetwork: NetworkId.TESTNET,
