@@ -13,11 +13,13 @@ class StealthRegistry extends Contract {
 
   /**
    * Register a stealth meta-address (spending pub 64B + viewing pub 64B = 128B).
+   * Keyed by sender + label to prevent other users from overwriting.
    */
   register(label: bytes, metaAddress: bytes): void {
     assert(len(metaAddress) === 128);
     assert(len(label) > 0);
-    this.metaAddresses(label).value = metaAddress;
+    const key = concat(this.txn.sender, label);
+    this.metaAddresses(key).value = metaAddress;
   }
 
   /**
@@ -36,10 +38,20 @@ class StealthRegistry extends Contract {
 
   /**
    * Remove a meta-address registration. Reclaims box MBR.
+   * Only the original registrant can deregister.
    */
   deregister(label: bytes): void {
-    assert(this.metaAddresses(label).exists);
-    this.metaAddresses(label).delete();
+    const key = concat(this.txn.sender, label);
+    assert(this.metaAddresses(key).exists);
+    this.metaAddresses(key).delete();
+  }
+
+  updateApplication(): void {
+    assert(false);
+  }
+
+  deleteApplication(): void {
+    assert(false);
   }
 }
 

@@ -5,13 +5,59 @@ class ConfidentialAsset extends Contract {
   totalDeposited = GlobalStateKey<uint64>({ key: 'total_dep' });
   totalWithdrawn = GlobalStateKey<uint64>({ key: 'total_wd' });
 
+  // Range proof verifier (LogicSig address or app ID)
+  rangeProofVerifierAddr = GlobalStateKey<Address>({ key: 'rp_addr' });
+  rangeProofVerifierAppId = GlobalStateKey<uint64>({ key: 'rp_app' });
+
   // Box storage: balance commitments (BN254 G1 points, 64 bytes each)
   balances = BoxMap<Address, bytes>({ prefix: 'bal' });
 
-  createApplication(assetId: uint64): void {
+  createApplication(assetId: uint64, rangeProofVerifierAppId: uint64): void {
     this.assetId.value = assetId;
     this.totalDeposited.value = 0;
     this.totalWithdrawn.value = 0;
+    this.rangeProofVerifierAddr.value = Address.zeroAddress;
+    this.rangeProofVerifierAppId.value = rangeProofVerifierAppId;
+  }
+
+  /**
+   * Set range proof LogicSig verifier address (creator only, one-shot).
+   * Once set, the address is immutable.
+   */
+  setRangeProofVerifier(addr: Address): void {
+    assert(this.txn.sender === this.app.creator);
+    assert(this.rangeProofVerifierAddr.value === Address.zeroAddress);
+    this.rangeProofVerifierAddr.value = addr;
+  }
+
+  /**
+   * Verify that the preceding transaction is a valid range proof verifier
+   * AND that the proof's public signals match the expected values.
+   * Supports LogicSig (PLONK) or app call (Groth16).
+   *
+   * Signal binding prevents proof replay / parameter substitution attacks.
+   */
+  private verifyRangeProofWithSignals(expectedSignals: bytes): void {
+    assert(this.txn.groupIndex > 0);
+    const verifierTxn = this.txnGroup[this.txn.groupIndex - 1];
+
+    let signals: bytes;
+
+    if (this.rangeProofVerifierAddr.value !== Address.zeroAddress
+        && verifierTxn.typeEnum === TransactionType.Payment
+        && verifierTxn.sender === this.rangeProofVerifierAddr.value) {
+      // PLONK LogicSig mode: range proof verified by LogicSig, signals in Note
+      assert(verifierTxn.amount === 0);
+      signals = verifierTxn.note;
+    } else {
+      // App-based verifier mode (Groth16), signals in applicationArgs[1]
+      assert(verifierTxn.typeEnum === TransactionType.ApplicationCall);
+      assert(verifierTxn.applicationID === AppID.fromUint64(this.rangeProofVerifierAppId.value));
+      signals = verifierTxn.applicationArgs[1];
+    }
+
+    // Verify all public signals match expected values
+    assert(signals === expectedSignals);
   }
 
   /**
@@ -21,7 +67,14 @@ class ConfidentialAsset extends Contract {
   shield(commitment: bytes, amount: uint64): void {
     assert(len(commitment) === 64);
 
-    const payTxn = this.txnGroup[this.txn.groupIndex - 1];
+    // Verify range proof binds commitment to deposited amount
+    // Signals: commitment(64) + amount(8)
+    const shieldSignals = concat(commitment, itob(amount));
+    this.verifyRangeProofWithSignals(shieldSignals);
+
+    // Payment must be 2 txns before (verifier is groupIndex-1, payment is groupIndex-2)
+    assert(this.txn.groupIndex > 1);
+    const payTxn = this.txnGroup[this.txn.groupIndex - 2];
     if (this.assetId.value === 0) {
       verifyPayTxn(payTxn, {
         receiver: this.app.address,
@@ -50,7 +103,7 @@ class ConfidentialAsset extends Contract {
 
   /**
    * Confidential transfer — transfer between shielded balances with hidden amount.
-   * Range proofs verified by LogicSig in atomic group.
+   * Range proof must be verified by a preceding verifier transaction.
    */
   confidentialTransfer(
     recipient: Address,
@@ -76,10 +129,18 @@ class ConfidentialAsset extends Contract {
       const recipientOld = this.balances(recipient).value;
       const computedRecipientNew = ecAdd('BN254g1', recipientOld, transferCommitment);
       assert(recipientNewCommitment === computedRecipientNew);
+    } else {
+      // New recipient: their commitment must equal the transfer commitment
+      assert(recipientNewCommitment === transferCommitment);
     }
 
-    // LogicSig verifies range proofs
-    assert(this.txn.groupIndex > 0);
+    // Verify range proof with signal binding
+    // Signals: senderNewCommitment(64) + recipientNewCommitment(64) + transferCommitment(64) + recipient(32)
+    const expectedSignals = concat(
+      concat(senderNewCommitment, recipientNewCommitment),
+      concat(transferCommitment, rawBytes(recipient)),
+    );
+    this.verifyRangeProofWithSignals(expectedSignals);
 
     this.balances(this.txn.sender).value = senderNewCommitment;
     this.balances(recipient).value = recipientNewCommitment;
@@ -89,10 +150,21 @@ class ConfidentialAsset extends Contract {
 
   /**
    * Unshield — withdraw from shielded balance to public.
+   * Requires a range proof verifier in the preceding transaction to prove
+   * that newCommitment = oldCommitment - amount*G (i.e., amount is valid).
    */
   unshield(amount: uint64, newCommitment: bytes): void {
     assert(len(newCommitment) === 64);
     assert(this.balances(this.txn.sender).exists);
+
+    // Verify range proof with signal binding
+    // Signals: oldCommitment(64) + newCommitment(64) + amount(8)
+    const oldCommitment = this.balances(this.txn.sender).value;
+    const expectedSignals = concat(
+      concat(oldCommitment, newCommitment),
+      itob(amount),
+    );
+    this.verifyRangeProofWithSignals(expectedSignals);
 
     // Update or delete balance
     if (newCommitment === rawBytes(bzero(64))) {
@@ -117,6 +189,7 @@ class ConfidentialAsset extends Contract {
   }
 
   optInToAsset(): void {
+    assert(this.txn.sender === this.app.creator);
     assert(this.assetId.value !== 0);
     sendAssetTransfer({
       assetReceiver: this.app.address,
@@ -124,6 +197,14 @@ class ConfidentialAsset extends Contract {
       xferAsset: AssetID.fromUint64(this.assetId.value),
       fee: 0,
     });
+  }
+
+  updateApplication(): void {
+    assert(false);
+  }
+
+  deleteApplication(): void {
+    assert(false);
   }
 }
 

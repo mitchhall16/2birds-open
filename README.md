@@ -42,14 +42,16 @@ Your privacy depends on the **anonymity set** — how many people your transacti
 
 ```mermaid
 graph LR
-    A[User deposits ALGO<br/>+ ZK proof of insertion] --> B[Pool Contract<br/>stores commitment<br/>in Merkle tree]
+    A[User deposits ALGO<br/>fixed denomination] --> B[Pool Contract<br/>stores commitment<br/>in Merkle tree]
     B --> C[User generates<br/>withdrawal proof<br/>in browser]
-    C --> D[Relayer submits tx<br/>user stays anonymous]
-    D --> E[Pool sends ALGO<br/>to any address]
+    C --> D[Relayer submits tx<br/>KV replay protection]
+    D --> E[Contract verifies<br/>proof signals on-chain]
+    E --> F[Pool sends ALGO<br/>to any address]
 
     style A fill:#4CAF50,color:#fff
     style D fill:#2196F3,color:#fff
-    style E fill:#4CAF50,color:#fff
+    style E fill:#FF9800,color:#fff
+    style F fill:#4CAF50,color:#fff
 ```
 
 - **ZK proofs** generated client-side with snarkjs (PLONK on BN254)
@@ -67,6 +69,9 @@ graph LR
 | **HPKE note backup** | Other mixers use localStorage only — clear browser = lose funds |
 | **Dual relayers** | No single operator sees all traffic |
 | **One-shot verifier lock** | `setPlonkVerifiers` can only be called once — creator can't swap verifiers |
+| **Signal binding** | Proof public signals verified on-chain — prevents replay/substitution |
+| **Denomination enforcement** | Contract-enforced fixed tiers — prevents commitment-amount mismatch |
+| **Falcon PQ mode** | Optional Falcon-1024 post-quantum signing via AVM v12 `falcon_verify` |
 
 ### Contracts (Testnet)
 
@@ -105,17 +110,18 @@ graph TB
         HPKE[hpke.ts — Encrypted on-chain notes]
         SCAN[scanner.ts — Chain note recovery]
         AC[Anti-Correlation<br/>Soak · Cooldown · Jitter]
+        FALCON[Falcon PQ Mode<br/>Optional quantum-safe signing]
     end
 
     subgraph "ZK Circuits — Circom + snarkjs"
         DC[Deposit ~42K constraints]
-        WC[Withdraw ~23K constraints]
-        PSC[PrivateSend ~44K constraints]
+        WC[Withdraw ~23K constraints<br/>+ relayer/fee binding]
+        PSC[PrivateSend ~44K constraints<br/>+ relayer/fee binding]
         SC[Split ~66K constraints]
         CC[Combine ~66K constraints]
     end
 
-    subgraph "Algorand AVM v11"
+    subgraph "Algorand AVM v12"
         PLONK["PLONK LogicSig Verifiers<br/>4 txns per proof, 0.004 ALGO"]
         PP1["Pool 0.1 ALGO"]
         PP5["Pool 0.5 ALGO"]
@@ -123,14 +129,15 @@ graph TB
     end
 
     subgraph "Infrastructure"
-        REL1[Relayer 1<br/>CF Worker]
-        REL2[Relayer 2<br/>CF Worker]
+        REL1[Relayer 1<br/>CF Worker + KV]
+        REL2[Relayer 2<br/>CF Worker + KV]
         R2[Cloudflare R2<br/>PLONK zkeys]
         IPFS[IPFS Fallback<br/>zkey mirror]
     end
 
     UI --> HOOKS
     HOOKS --> PRIV & TREE & HPKE & AC
+    HOOKS -.->|optional| FALCON
     HOOKS -->|snarkjs| DC & WC & PSC & SC & CC
     HOOKS -->|LogicSig group| PLONK
     HOOKS -->|app call| PP1 & PP5 & PP10
@@ -142,6 +149,7 @@ graph TB
 
     style PLONK fill:#4CAF50,color:#fff
     style AC fill:#e91e63,color:#fff
+    style FALCON fill:#9C27B0,color:#fff
 ```
 
 ### Cryptographic primitives
@@ -154,7 +162,9 @@ graph TB
 | HPKE | X25519 + HKDF-SHA256 + ChaCha20-Poly1305 | Encrypted note backup in txn notes |
 | Key derivation | HKDF for view keys, MiMC for spend secrets | View/spend separation |
 | Privacy addresses | Bech32 `priv1...` (66-byte payload) | Algo pubkey + X25519 view pubkey |
-| Merkle tree | Incremental, depth 16, ~65K leaf capacity | Commitment storage + membership proofs |
+| Merkle tree | Incremental, depth 20, ~1M leaf capacity | Commitment storage + membership proofs |
+| Falcon-1024 | NIST Level 5 post-quantum, AVM v12 `falcon_verify` | Optional quantum-safe transaction signing |
+| Signal binding | On-chain `verifyProofWithSignals` | Proof replay / parameter substitution prevention |
 
 ### Anti-correlation protections
 
@@ -257,7 +267,7 @@ block-beta
 
 ### Tech stack
 
-Circom 2.1.6 + snarkjs (PLONK/Groth16, BN254) | TealScript | React + Vite | Cloudflare Pages/Workers/R2 | IPFS | AVM v11
+Circom 2.1.6 + snarkjs (PLONK/Groth16, BN254) | TealScript | React + Vite | Cloudflare Pages/Workers/R2/KV | IPFS | AVM v12 | Falcon-1024 (optional PQ)
 
 ## License
 

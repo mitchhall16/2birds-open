@@ -9,6 +9,7 @@ import {
 } from '@txnlab/use-wallet-react'
 import { App } from './App'
 import { ToastProvider } from './contexts/ToastContext'
+import { FalconProvider } from './contexts/FalconContext'
 import './styles/globals.css'
 import './styles/components.css'
 
@@ -43,7 +44,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ToastProvider>
       <WalletProvider manager={walletManager}>
-        <App />
+        <FalconProvider>
+          <App />
+        </FalconProvider>
       </WalletProvider>
     </ToastProvider>
   </React.StrictMode>,

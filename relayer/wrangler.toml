@@ -9,8 +9,15 @@ BUDGET_HELPER_APP_ID = "756420102"
 ALLOWED_POOL_IDS = "756478534,756478549,756480627"
 PLONK_VERIFIER_ADDR = "Y5EGJIAMTCQJ5VYEPPNHUXLJ2QOAQRFION77ILEOFM63V5DOURIOSLE2XE"
 
+[[kv_namespaces]]
+binding = "RELAY_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+# Create with: wrangler kv namespace create RELAY_KV
+# Then paste the id above
+
 # Secrets (set via `wrangler secret put`):
 # RELAYER_MNEMONIC — 25-word Algorand mnemonic for the relayer account
+# OPERATOR_API_KEY — Bearer token for /api/process-refund (generate with: openssl rand -hex 32)
 # ALLOWED_ORIGINS — comma-separated CORS origins (optional)
-# PLONK_VERIFIER_TEAL — base64-encoded compiled PLONK verifier program (set via `wrangler secret put`)
-# PLONK_VK_HEX — hex-encoded VK bytes for Note field (set via `wrangler secret put`)
+# PLONK_VERIFIER_TEAL — base64-encoded compiled PLONK verifier program
+# PLONK_VK_HEX — hex-encoded VK bytes for Note field

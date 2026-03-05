@@ -103,9 +103,11 @@ export const RELAYERS = [
   },
 ] as const
 
-/** Pick a random relayer for this operation */
+/** Pick a random relayer for this operation (crypto-secure randomness) */
 export function pickRelayer(): typeof RELAYERS[number] {
-  return RELAYERS[Math.floor(Math.random() * RELAYERS.length)]
+  const buf = new Uint8Array(1)
+  crypto.getRandomValues(buf)
+  return RELAYERS[buf[0] % RELAYERS.length]
 }
 
 
@@ -144,6 +146,14 @@ const PLONK_LSIG_FEES = {
 }
 
 export const FEES = USE_PLONK_LSIG ? PLONK_LSIG_FEES : GROTH16_FEES
+
+// Falcon LogicSig extra fees (when quantum-safe mode is active)
+// Groth16 groups need padding txns because Falcon LogicSig is ~3093 bytes.
+// PLONK groups (6+ txns) already have enough byte budget from fee pooling.
+export const FALCON_EXTRA_FEE = {
+  groth16Padding: 2_000n, // 1-2 padding txns × 0.001 ALGO
+  plonk: 0n,
+} as const
 
 // Batch window interval (minutes). Deposits snap to :00, :15, :30, :45
 export const BATCH_WINDOW_MINUTES = 15

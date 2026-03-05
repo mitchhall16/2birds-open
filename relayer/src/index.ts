@@ -21,6 +21,8 @@ import algosdk from 'algosdk'
 interface Env {
   RELAYER_MNEMONIC: string
   ALGOD_URL: string
+  RELAY_KV: KVNamespace               // Persistent KV for replay protection + refund queue
+  OPERATOR_API_KEY?: string           // Required for /api/process-refund (set via wrangler secret)
   VERIFIER_APP_ID?: string
   BUDGET_HELPER_APP_ID?: string
   DEPOSIT_VERIFIER_APP_ID?: string
@@ -36,6 +38,7 @@ interface Env {
 
 const PLONK_MIN_RELAY_FEE = 10_000  // 0.01 ALGO (PLONK is cheap)
 const GROTH16_MIN_RELAY_FEE = 220_000 // 0.22 ALGO (covers 213K verifier + 2K app + 1K pay + margin)
+const MAX_RELAY_FEE = 1_000_000 // 1 ALGO — reject unreasonably high fees (prevents griefing)
 
 // Anti-correlation: minimum deposits in a pool before the relayer will process withdrawals.
 // Prevents "deposit 1, withdraw 1" deanonymization with trivial anonymity sets.
@@ -104,6 +107,7 @@ function uint64ToBytes(n: bigint | number): Uint8Array {
 }
 
 function abiEncodeBytes(data: Uint8Array): Uint8Array {
+  if (data.length > 65535) throw new Error('Data too large for ABI encoding')
   const result = new Uint8Array(2 + data.length)
   result[0] = (data.length >> 8) & 0xff
   result[1] = data.length & 0xff
@@ -211,7 +215,7 @@ function corsHeaders(env: Env, request?: Request): HeadersInit {
   }
   return {
     'Access-Control-Allow-Origin': origin,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   }
 }
@@ -224,18 +228,20 @@ function jsonResponse(data: object, status: number, env: Env, request?: Request)
 }
 
 // Per-isolate rate limiting (best-effort — resets on isolate recycle)
-// IMPORTANT: For production, MUST also configure Cloudflare Rate Limiting rules
-// via dashboard or wrangler.toml. This in-memory map is a fallback only —
-// CF Workers spin up fresh isolates freely, so this alone is insufficient.
-//   Dashboard: Security → WAF → Rate limiting rules
+// IMPORTANT: Also configure Cloudflare WAF Rate Limiting rules via dashboard:
+//   Security → WAF → Rate limiting rules
 //   Path: /api/*, Method: POST, Rate: 5 requests/minute per IP
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
 const RATE_LIMIT_WINDOW_MS = 60_000 // 1 minute
 const RATE_LIMIT_MAX = 5 // 5 requests per window per IP
 
-// Track used payment txn IDs to prevent replay (per-isolate, best-effort)
-// Production should use Durable Objects or KV for persistence
-const usedPaymentTxnIds = new Set<string>()
+// Payment replay protection uses KV (persistent across isolate recycles)
+// KV key: "pay:<txnId>" → "1", TTL 24 hours (txns expire after ~1000 rounds anyway)
+const KV_PAY_PREFIX = 'pay:'
+const KV_PAY_TTL_SECONDS = 86_400 // 24 hours
+
+// Refund queue uses KV: "refund:<senderAddr>:<payTxId>" → JSON { amount, commitment, timestamp }
+const KV_REFUND_PREFIX = 'refund:'
 
 /** Hash IP so raw addresses are never stored in memory */
 async function hashIp(ip: string): Promise<string> {
@@ -283,6 +289,24 @@ export default {
       return jsonResponse({ status: 'ok', mode: env.PLONK_VERIFIER_TEAL ? 'plonk' : 'groth16' }, 200, env, request)
     }
 
+    // Refund check: GET /api/refunds?address=ALGO_ADDRESS (rate-limited)
+    if (url.pathname === '/api/refunds' && request.method === 'GET') {
+      const ipHash = await hashIp(request.headers.get('CF-Connecting-IP') ?? 'unknown')
+      if (!checkRateLimit(ipHash)) {
+        return jsonResponse({ error: 'Rate limit exceeded.' }, 429, env, request)
+      }
+      return handleRefundCheck(url, env, request)
+    }
+
+    // Process refund: POST /api/process-refund (operator only — requires OPERATOR_API_KEY)
+    if (url.pathname === '/api/process-refund' && request.method === 'POST') {
+      const ipHash = await hashIp(request.headers.get('CF-Connecting-IP') ?? 'unknown')
+      if (!checkRateLimit(ipHash)) {
+        return jsonResponse({ error: 'Rate limit exceeded.' }, 429, env, request)
+      }
+      return handleProcessRefund(request, env)
+    }
+
     return jsonResponse({ error: 'Not found' }, 404, env, request)
   },
 }
@@ -292,6 +316,11 @@ async function handleWithdraw(request: Request, env: Env): Promise<Response> {
 
   if (!env.RELAYER_MNEMONIC) {
     return json({ error: 'Relayer not configured' }, 500)
+  }
+
+  const contentLength = parseInt(request.headers.get('Content-Length') ?? '0', 10)
+  if (contentLength > MAX_REQUEST_BYTES) {
+    return json({ error: 'Request too large' }, 413)
   }
 
   let bodyText: string
@@ -330,8 +359,8 @@ async function handleWithdraw(request: Request, env: Env): Promise<Response> {
   if (typeof body.poolAppId !== 'number' || !Number.isInteger(body.poolAppId) || body.poolAppId <= 0) {
     return json({ error: 'poolAppId must be a positive integer' }, 400)
   }
-  if (typeof body.fee !== 'number' && body.fee !== undefined) {
-    return json({ error: 'fee must be a number' }, 400)
+  if (body.fee !== undefined && (!Number.isInteger(body.fee) || body.fee < 0)) {
+    return json({ error: 'fee must be a non-negative integer' }, 400)
   }
 
   // Validate pool allowlist
@@ -346,6 +375,9 @@ async function handleWithdraw(request: Request, env: Env): Promise<Response> {
   const minFee = mode === 'plonk' ? PLONK_MIN_RELAY_FEE : GROTH16_MIN_RELAY_FEE
   if (relayFee < minFee) {
     return json({ error: `Relay fee must be at least ${minFee} microAlgos (${minFee / 1_000_000} ALGO)` }, 400)
+  }
+  if (relayFee > MAX_RELAY_FEE) {
+    return json({ error: `Relay fee exceeds maximum of ${MAX_RELAY_FEE} microAlgos` }, 400)
   }
 
   // Parse and validate hex inputs
@@ -433,7 +465,9 @@ async function handleWithdraw(request: Request, env: Env): Promise<Response> {
           break
         }
       }
-    } catch { /* non-critical, proceed */ }
+    } catch (acErr) {
+      console.warn('Anti-correlation check failed (proceeding anyway):', (acErr as Error)?.message)
+    }
 
     // Nullifier spend check removed — let on-chain validation reject spent nullifiers.
     // A pre-check here would leak which notes have been withdrawn (409 vs other errors).
@@ -557,7 +591,7 @@ async function handleWithdraw(request: Request, env: Env): Promise<Response> {
 
     return json({ txId: confirmedTxId, status: 'confirmed', mode })
   } catch (err: any) {
-    console.error('Relayer withdraw error:', err)
+    console.error('Relayer withdraw error:', (err?.message || 'unknown').slice(0, 80))
     // Return a generic error — do not leak on-chain error details (e.g. nullifier state)
     return json({ error: 'Transaction failed' }, 500)
   }
@@ -568,6 +602,15 @@ async function handleDeposit(request: Request, env: Env): Promise<Response> {
 
   if (!env.RELAYER_MNEMONIC) {
     return json({ error: 'Relayer not configured' }, 500)
+  }
+
+  if (!env.RELAY_KV) {
+    return json({ error: 'KV not configured — replay protection unavailable' }, 500)
+  }
+
+  const contentLength = parseInt(request.headers.get('Content-Length') ?? '0', 10)
+  if (contentLength > MAX_REQUEST_BYTES) {
+    return json({ error: 'Request too large' }, 413)
   }
 
   let bodyText: string
@@ -608,8 +651,8 @@ async function handleDeposit(request: Request, env: Env): Promise<Response> {
   if (typeof body.amount !== 'number' || !Number.isInteger(body.amount) || body.amount <= 0) {
     return json({ error: 'amount must be a positive integer' }, 400)
   }
-  if (typeof body.fee !== 'number' && body.fee !== undefined) {
-    return json({ error: 'fee must be a number' }, 400)
+  if (body.fee !== undefined && (!Number.isInteger(body.fee) || body.fee < 0)) {
+    return json({ error: 'fee must be a non-negative integer' }, 400)
   }
   if (typeof body.boxState.rootHistoryIndex !== 'number' || !Number.isInteger(body.boxState.rootHistoryIndex) || body.boxState.rootHistoryIndex < 0) {
     return json({ error: 'boxState.rootHistoryIndex must be a non-negative integer' }, 400)
@@ -635,6 +678,9 @@ async function handleDeposit(request: Request, env: Env): Promise<Response> {
   const minFee = mode === 'plonk' ? PLONK_MIN_RELAY_FEE : GROTH16_MIN_RELAY_FEE
   if (relayFee < minFee) {
     return json({ error: `Relay fee must be at least ${minFee} microAlgos` }, 400)
+  }
+  if (relayFee > MAX_RELAY_FEE) {
+    return json({ error: `Relay fee exceeds maximum of ${MAX_RELAY_FEE} microAlgos` }, 400)
   }
 
   const proofBytes = hexToBytes(body.proof)
@@ -711,32 +757,52 @@ async function handleDeposit(request: Request, env: Env): Promise<Response> {
       return json({ error: 'Payment note must start with the 32-byte commitment hash' }, 400)
     }
 
-    // C-2: Reject replayed payment txn IDs
+    // C-2: Reject replayed payment txn IDs (KV-persistent across isolate recycles)
     const payTxnId = paymentTxn.txID()
-    if (usedPaymentTxnIds.has(payTxnId)) {
+    const kvPayKey = KV_PAY_PREFIX + payTxnId
+    const existing = await env.RELAY_KV.get(kvPayKey)
+    if (existing) {
       return json({ error: 'This payment transaction has already been used' }, 400)
     }
+    // Claim immediately to close TOCTOU window (before submitting payment)
+    await env.RELAY_KV.put(kvPayKey, 'pending', { expirationTtl: KV_PAY_TTL_SECONDS })
 
     const params = await algod.getTransactionParams().do()
 
+    // Helper to release KV claim on validation failure (so user can retry)
+    const rejectAndRelease = async (msg: string, status = 400) => {
+      await env.RELAY_KV.delete(kvPayKey)
+      return json({ error: msg }, status)
+    }
+
     // Verify payment has a reasonable validity window (at least 20 rounds ahead)
     if (paymentTxn.lastValid < params.firstValid + 20n) {
-      return json({ error: 'Payment validity window too short — must be valid for at least 20 rounds' }, 400)
+      return rejectAndRelease('Payment validity window too short — must be valid for at least 20 rounds')
     }
 
     // H-2: Verify client-supplied boxState against on-chain state
     const onChainState = await fetchPoolState(algod, body.poolAppId)
     if (onChainState.nextIndex !== undefined && onChainState.nextIndex !== body.boxState.nextIndex) {
-      return json({ error: 'boxState.nextIndex does not match on-chain state' }, 400)
+      return rejectAndRelease('boxState.nextIndex does not match on-chain state')
     }
     if (onChainState.currentRoot && !bytesEqual(signalsBytes.slice(0, 32), onChainState.currentRoot)) {
-      return json({ error: 'Signals currentRoot does not match on-chain state' }, 400)
+      return rejectAndRelease('Signals currentRoot does not match on-chain state')
     }
     if (onChainState.denomination !== undefined && onChainState.denomination !== body.amount) {
-      return json({ error: 'Deposit amount does not match pool denomination' }, 400)
+      return rejectAndRelease('Deposit amount does not match pool denomination')
     }
     if (onChainState.rootHistoryIndex !== undefined && onChainState.rootHistoryIndex !== body.boxState.rootHistoryIndex) {
-      return json({ error: 'boxState.rootHistoryIndex does not match on-chain state' }, 400)
+      return rejectAndRelease('boxState.rootHistoryIndex does not match on-chain state')
+    }
+
+    // Validate evictedRoot and hpkeNote BEFORE payment submission (avoid unnecessary refund queue)
+    const evictedRoot = body.boxState.evictedRoot ? hexToBytes(body.boxState.evictedRoot) : undefined
+    if (evictedRoot && evictedRoot.length !== 32) {
+      return rejectAndRelease('boxState.evictedRoot must be 32 bytes')
+    }
+    const hpkeNote = body.hpkeNote ? hexToBytes(body.hpkeNote) : undefined
+    if (hpkeNote && hpkeNote.length > 1024) {
+      return rejectAndRelease('hpkeNote must be at most 1024 bytes')
     }
 
     // Batch window pre-check — reject deposits outside the ~240s window
@@ -746,7 +812,7 @@ async function handleDeposit(request: Request, env: Env): Promise<Response> {
     const windowOffset = approxTimestamp % 900
     if (windowOffset > 150 && windowOffset < 750) {
       const secsUntilNext = 900 - windowOffset
-      return json({ error: `Outside batch window — next window opens in ~${Math.ceil(secsUntilNext / 60)} minutes` }, 400)
+      return rejectAndRelease(`Outside batch window — next window opens in ~${Math.ceil(secsUntilNext / 60)} minutes`)
     }
 
     // Submit user's payment FIRST — if it fails, don't front the deposit
@@ -754,21 +820,15 @@ async function handleDeposit(request: Request, env: Env): Promise<Response> {
     const payResp = await algod.sendRawTransaction(signedPaymentBytes).do()
     payTxId = (payResp as any).txid ?? (payResp as any).txId ?? ''
     await algosdk.waitForConfirmation(algod, payTxId!, 4)
-    usedPaymentTxnIds.add(payTxnId)
 
-    // Cap the replay-tracking set to prevent memory growth
-    if (usedPaymentTxnIds.size > 10000) {
-      const first = usedPaymentTxnIds.values().next().value!
-      usedPaymentTxnIds.delete(first)
-    }
+    // Update claim to confirmed — DO NOT use rejectAndRelease after this point
+    // (it deletes kvPayKey, which would break replay protection for confirmed payments)
+    await env.RELAY_KV.put(kvPayKey, 'confirmed', { expirationTtl: KV_PAY_TTL_SECONDS })
 
-    const evictedRoot = body.boxState.evictedRoot ? hexToBytes(body.boxState.evictedRoot) : undefined
     const boxes = buildDepositBoxRefs(
       body.poolAppId, body.boxState.rootHistoryIndex,
       body.boxState.nextIndex, newRootBytes, evictedRoot,
     )
-
-    const hpkeNote = body.hpkeNote ? hexToBytes(body.hpkeNote) : undefined
 
     // Payment from relayer → pool (deposit amount, relayer fronts this)
     const poolPayTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
@@ -874,16 +934,187 @@ async function handleDeposit(request: Request, env: Env): Promise<Response> {
 
     return json({ txId: confirmedTxId, paymentTxId: payTxId, status: 'confirmed', mode })
   } catch (err: any) {
-    // IMPORTANT: User's payment was already confirmed (payment-first flow).
-    // If deposit failed, the relayer holds the user's funds and must reconcile.
-    // Log full details for manual or automated refund processing.
+    // User's payment was already confirmed (payment-first flow).
+    // Write a refund record to KV so the operator can process refunds.
+    let senderAddr = 'unknown'
+    try {
+      senderAddr = algosdk.decodeSignedTransaction(base64ToBytes(body.signedPayment)).txn.sender.toString()
+    } catch { /* best effort */ }
+
+    // Log only non-identifying data — don't log commitment+sender together (deanonymization risk)
     console.error('Relayer deposit FAILED after payment confirmed:', {
-      payTxId,
-      senderAddr: (() => { try { return algosdk.decodeSignedTransaction(base64ToBytes(body.signedPayment)).txn.sender.toString() } catch { return 'unknown' } })(),
-      amount: body.amount,
-      commitment: body.commitment,
-      error: err?.message || 'unknown',
+      payTxId, error: err?.message || 'unknown',
     })
-    return json({ error: 'Deposit failed after payment confirmed — contact relayer for refund', paymentTxId: payTxId }, 500)
+
+    // Queue refund in KV (persistent — survives isolate recycle)
+    if (env.RELAY_KV && payTxId) {
+      const refundKey = `${KV_REFUND_PREFIX}${senderAddr}:${payTxId}`
+      await env.RELAY_KV.put(refundKey, JSON.stringify({
+        senderAddr,
+        amount: body.amount,
+        fee: relayFee,
+        payTxId,
+        status: 'pending',
+        timestamp: Date.now(),
+      }), { expirationTtl: 30 * 86_400 }) // Keep for 30 days
+    }
+
+    return json({
+      error: 'Deposit failed after payment confirmed — refund queued',
+      paymentTxId: payTxId,
+      refundStatus: 'queued',
+    }, 500)
+  }
+}
+
+/** Check pending refunds for an address */
+async function handleRefundCheck(url: URL, env: Env, request: Request): Promise<Response> {
+  const json = (data: object, status = 200) => jsonResponse(data, status, env, request)
+
+  const address = url.searchParams.get('address')
+  if (!address || !algosdk.isValidAddress(address)) {
+    return json({ error: 'Valid Algorand address required' }, 400)
+  }
+
+  if (!env.RELAY_KV) {
+    return json({ error: 'KV not configured' }, 500)
+  }
+
+  // List refund keys for this address
+  const prefix = `${KV_REFUND_PREFIX}${address}:`
+  const list = await env.RELAY_KV.list({ prefix, limit: 50 })
+
+  const refunds: object[] = []
+  for (const key of list.keys) {
+    const val = await env.RELAY_KV.get(key.name)
+    if (val) {
+      try {
+        const record = JSON.parse(val)
+        // Only expose non-identifying fields (don't leak commitment)
+        refunds.push({
+          amount: record.amount,
+          fee: record.fee,
+          payTxId: record.payTxId,
+          timestamp: record.timestamp,
+        })
+      } catch { /* skip malformed */ }
+    }
+  }
+
+  return json({ address, refunds })
+}
+
+/** Process a refund — sends funds back to the original depositor.
+ *  Requires operator authorization (same mnemonic as relayer). */
+async function handleProcessRefund(request: Request, env: Env): Promise<Response> {
+  const json = (data: object, status = 200) => jsonResponse(data, status, env, request)
+
+  // Authenticate operator (constant-time comparison to prevent timing attacks)
+  if (!env.OPERATOR_API_KEY) {
+    return json({ error: 'Operator API key not configured' }, 500)
+  }
+  const authHeader = request.headers.get('Authorization') ?? ''
+  const expected = new TextEncoder().encode(`Bearer ${env.OPERATOR_API_KEY}`)
+  const actual = new TextEncoder().encode(authHeader)
+  if (expected.byteLength !== actual.byteLength) {
+    return json({ error: 'Unauthorized' }, 401)
+  }
+  const match = await crypto.subtle.timingSafeEqual(expected, actual)
+  if (!match) {
+    return json({ error: 'Unauthorized' }, 401)
+  }
+
+  if (!env.RELAYER_MNEMONIC || !env.RELAY_KV) {
+    return json({ error: 'Relayer or KV not configured' }, 500)
+  }
+
+  const contentLength = parseInt(request.headers.get('Content-Length') ?? '0', 10)
+  if (contentLength > MAX_REQUEST_BYTES) {
+    return json({ error: 'Request too large' }, 413)
+  }
+
+  let body: { senderAddr: string; payTxId: string }
+  try {
+    body = await request.json() as typeof body
+  } catch {
+    return json({ error: 'Invalid JSON' }, 400)
+  }
+
+  if (!body.senderAddr || !body.payTxId) {
+    return json({ error: 'senderAddr and payTxId required' }, 400)
+  }
+
+  // Validate payTxId format (Algorand txids are 52-char base32)
+  if (typeof body.payTxId !== 'string' || !/^[A-Z2-7]{52}$/.test(body.payTxId)) {
+    return json({ error: 'Invalid payTxId format' }, 400)
+  }
+
+  // Validate address before using it in KV key
+  if (!algosdk.isValidAddress(body.senderAddr)) {
+    return json({ error: 'Invalid senderAddr' }, 400)
+  }
+
+  const refundKey = `${KV_REFUND_PREFIX}${body.senderAddr}:${body.payTxId}`
+  const refundVal = await env.RELAY_KV.get(refundKey)
+  if (!refundVal) {
+    return json({ error: 'No pending refund found for this address/payTxId' }, 404)
+  }
+
+  const refundData = JSON.parse(refundVal) as { senderAddr: string; amount: number; fee: number; payTxId: string; status?: string }
+
+  if (refundData.status === 'processing') {
+    return json({ error: 'Refund already being processed' }, 409)
+  }
+
+  if (!algosdk.isValidAddress(refundData.senderAddr)) {
+    return json({ error: 'Invalid sender address in refund record' }, 400)
+  }
+
+  // Validate numeric fields from KV (could be corrupted/tampered)
+  if (typeof refundData.amount !== 'number' || !Number.isFinite(refundData.amount) || refundData.amount <= 0) {
+    return json({ error: 'Invalid refund amount in record' }, 400)
+  }
+  if (!VALID_DENOMINATION_TIERS.has(refundData.amount)) {
+    return json({ error: 'Refund amount is not a valid denomination tier' }, 400)
+  }
+  if (refundData.fee !== undefined && (typeof refundData.fee !== 'number' || !Number.isFinite(refundData.fee) || refundData.fee < 0)) {
+    return json({ error: 'Invalid fee in refund record' }, 400)
+  }
+  if ((refundData.fee || 0) > MAX_RELAY_FEE) {
+    return json({ error: 'Refund fee exceeds maximum' }, 400)
+  }
+
+  // Claim immediately to prevent double-refund race condition
+  await env.RELAY_KV.put(refundKey, JSON.stringify({ ...refundData, status: 'processing' }), { expirationTtl: 30 * 86_400 })
+
+  try {
+    const algod = new algosdk.Algodv2('', env.ALGOD_URL)
+    const relayer = algosdk.mnemonicToSecretKey(env.RELAYER_MNEMONIC)
+    const params = await algod.getTransactionParams().do()
+
+    // Refund deposit amount + relay fee (deposit never happened, user gets full refund)
+    const refundAmount = refundData.amount + (refundData.fee || 0)
+    const refundTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: relayer.addr.toString(),
+      receiver: refundData.senderAddr,
+      amount: refundAmount,
+      suggestedParams: { ...params, fee: BigInt(1000), flatFee: true },
+      note: new TextEncoder().encode(`refund:${body.payTxId}`),
+    })
+
+    const signedRefund = refundTxn.signTxn(relayer.sk)
+    const resp = await algod.sendRawTransaction(signedRefund).do()
+    const txId = (resp as any).txid ?? (resp as any).txId
+    await algosdk.waitForConfirmation(algod, txId, 4)
+
+    // Remove refund record
+    await env.RELAY_KV.delete(refundKey)
+
+    return json({ status: 'refunded', txId, amount: refundAmount })
+  } catch (err: any) {
+    // Restore refund record so it can be retried
+    await env.RELAY_KV.put(refundKey, JSON.stringify({ ...refundData, status: 'pending' }), { expirationTtl: 30 * 86_400 })
+    console.error('Refund failed:', err?.message)
+    return json({ error: 'Refund transaction failed' }, 500)
   }
 }

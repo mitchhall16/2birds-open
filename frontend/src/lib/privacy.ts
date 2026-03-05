@@ -375,9 +375,14 @@ async function loadAllNotesAsync(): Promise<DepositNote[]> {
   return []
 }
 
-/** Simple async mutex — prevents concurrent load→modify→save from clobbering each other */
+/** Cross-tab async mutex — prevents concurrent load→modify→save from clobbering each other.
+ *  Uses navigator.locks for cross-tab safety, falls back to in-process mutex. */
 let notesMutex: Promise<void> = Promise.resolve()
 function withNotesMutex<T>(fn: () => Promise<T>): Promise<T> {
+  if (navigator.locks) {
+    return navigator.locks.request('privacy_notes_mutex', () => fn()) as Promise<T>
+  }
+  // Fallback: in-process mutex for browsers without Web Locks API
   const prev = notesMutex
   let resolve: () => void
   notesMutex = new Promise<void>(r => { resolve = r })
@@ -446,6 +451,111 @@ export async function removeNoteByCommitment(commitment: bigint): Promise<void> 
       await saveAllNotesAsync(all)
     }
   })
+}
+
+// ── Note Backup Export/Import (AES-GCM encrypted) ───────────
+
+/** Derive an AES-GCM key from a password + salt using PBKDF2 */
+async function deriveBackupKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
+  const enc = new TextEncoder()
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey'])
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: salt.buffer as ArrayBuffer, iterations: 100_000, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  )
+}
+
+/** Export all notes as a password-encrypted backup string */
+export async function exportNotesBackup(password: string): Promise<string> {
+  if (!password || password.length < 12) throw new Error('Backup password must be at least 12 characters')
+  const notes = await loadAllNotesAsync()
+  if (notes.length === 0) throw new Error('No notes to export')
+  const payload = JSON.stringify(notes.map(n => ({
+    commitment: n.commitment.toString(),
+    nullifier: n.nullifier.toString(),
+    secret: n.secret.toString(),
+    denomination: n.denomination.toString(),
+    leafIndex: n.leafIndex,
+    timestamp: n.timestamp,
+    appId: n.appId,
+    assetId: n.assetId,
+  })))
+  const enc = new TextEncoder()
+  const salt = crypto.getRandomValues(new Uint8Array(16))
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const key = await deriveBackupKey(password, salt)
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(payload)))
+  // Format: base64(salt(16) + iv(12) + ciphertext)
+  const combined = new Uint8Array(salt.length + iv.length + ciphertext.length)
+  combined.set(salt, 0)
+  combined.set(iv, salt.length)
+  combined.set(ciphertext, salt.length + iv.length)
+  return uint8ToBase64(combined)
+}
+
+/** Import notes from a password-encrypted backup string, merging with existing notes */
+export async function importNotesBackup(backupStr: string, password: string): Promise<number> {
+  if (!password) throw new Error('Password required to decrypt backup')
+  const raw = Uint8Array.from(atob(backupStr), c => c.charCodeAt(0))
+  if (raw.length < 29) throw new Error('Invalid backup file')
+  const salt = raw.slice(0, 16)
+  const iv = raw.slice(16, 28)
+  const ciphertext = raw.slice(28)
+  const key = await deriveBackupKey(password, salt)
+  let decrypted: ArrayBuffer
+  try {
+    decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext)
+  } catch {
+    throw new Error('Wrong password or corrupted backup')
+  }
+  const payload = JSON.parse(new TextDecoder().decode(decrypted))
+  const existing = await loadAllNotesAsync()
+  const existingCommitments = new Set(existing.map(n => n.commitment.toString()))
+  let imported = 0
+  for (const n of payload) {
+    if (existingCommitments.has(n.commitment)) continue
+    existing.push({
+      commitment: BigInt(n.commitment),
+      nullifier: BigInt(n.nullifier),
+      secret: BigInt(n.secret),
+      denomination: BigInt(n.denomination),
+      leafIndex: n.leafIndex,
+      timestamp: n.timestamp,
+      appId: n.appId,
+      assetId: n.assetId ?? 0,
+    })
+    imported++
+  }
+  if (imported > 0) await saveAllNotesAsync(existing)
+  return imported
+}
+
+/** Check if a note's nullifier has been spent on-chain */
+export async function isNoteSpent(client: algosdk.Algodv2, note: DepositNote): Promise<boolean> {
+  if (!note.appId) {
+    // No appId — look up from denomination
+    const pool = POOL_CONTRACTS[note.denomination.toString()]
+    if (!pool) return false
+    note = { ...note, appId: pool.appId }
+  }
+  await initMimc()
+  const nHash = computeNullifierHash(note.nullifier)
+  // Convert bigint to 32-byte big-endian
+  const hex = nHash.toString(16).padStart(64, '0')
+  const hashBytes = new Uint8Array(32)
+  for (let i = 0; i < 32; i++) hashBytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  const boxName = new Uint8Array(4 + 32)
+  boxName.set(TEXT_ENCODER.encode('null'), 0)
+  boxName.set(hashBytes, 4)
+  try {
+    await client.getApplicationBoxByName(note.appId!, boxName).do()
+    return true // box exists = nullifier spent
+  } catch {
+    return false // box doesn't exist = unspent
+  }
 }
 
 // ── ZK Proof Encoding ───────────────────
@@ -519,7 +629,10 @@ const verifiedZkeyBlobUrls = new Map<string, string>()
  * The blob URL is cached so subsequent calls for the same zkeyPath skip re-fetch.
  * This eliminates the TOCTOU gap where the file could change between verification and use.
  */
-async function getVerifiedZkeyUrl(zkeyPath: string): Promise<string> {
+async function getVerifiedZkeyUrl(
+  zkeyPath: string,
+  onProgress?: (msg: string) => void,
+): Promise<string> {
   const cached = verifiedZkeyBlobUrls.get(zkeyPath)
   if (cached) return cached
 
@@ -530,12 +643,45 @@ async function getVerifiedZkeyUrl(zkeyPath: string): Promise<string> {
   let buf: ArrayBuffer | null = null
   for (const url of urls) {
     try {
+      onProgress?.(`Downloading proving key...`)
       const resp = await fetch(url)
-      if (resp.ok) { buf = await resp.arrayBuffer(); break }
-    } catch { /* try next source */ }
+      if (!resp.ok) continue
+
+      // Stream with progress if Content-Length is available
+      const contentLength = Number(resp.headers.get('Content-Length') || 0)
+      if (contentLength > 0 && resp.body) {
+        const reader = resp.body.getReader()
+        const chunks: Uint8Array[] = []
+        let received = 0
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          chunks.push(value)
+          received += value.length
+          const pct = Math.round((received / contentLength) * 100)
+          const mb = (received / 1_048_576).toFixed(1)
+          const totalMb = (contentLength / 1_048_576).toFixed(0)
+          onProgress?.(`Downloading proving key... ${mb}/${totalMb} MB (${pct}%)`)
+        }
+        const combined = new Uint8Array(received)
+        let offset = 0
+        for (const chunk of chunks) {
+          combined.set(chunk, offset)
+          offset += chunk.length
+        }
+        buf = combined.buffer
+      } else {
+        buf = await resp.arrayBuffer()
+      }
+      break
+    } catch (e) {
+      console.warn(`zkey fetch failed from ${url}:`, e)
+      /* try next source */
+    }
   }
   if (!buf) throw new Error(`Failed to fetch zkey from all sources: ${zkeyPath}`)
 
+  onProgress?.('Verifying proving key integrity...')
   const hashBuf = await crypto.subtle.digest('SHA-256', buf)
   const actual = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('')
   if (actual !== expectedHash) {
@@ -558,8 +704,10 @@ export async function generateProof(
   circuitInput: Record<string, string | string[] | number[]>,
   wasmPath: string,
   zkeyPath: string,
+  onProgress?: (msg: string) => void,
 ): Promise<{ proof: any; publicSignals: string[] }> {
-  const verifiedUrl = await getVerifiedZkeyUrl(zkeyPath)
+  const verifiedUrl = await getVerifiedZkeyUrl(zkeyPath, onProgress)
+  onProgress?.('Computing ZK proof...')
   const snarkjs = await import('snarkjs')
   if (system === 'plonk') {
     return snarkjs.plonk.fullProve(circuitInput, wasmPath, verifiedUrl)
@@ -674,20 +822,25 @@ let masterKeyDeterministic = false
 /** Cached view keypair (derived from master key) */
 let cachedViewKeypair: { privateKey: Uint8Array; publicKey: Uint8Array } | null = null
 
-/** Inactivity timeout — clear cached key after 15 minutes of no crypto operations */
-const KEY_INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000
+/** Inactivity timeout — clear cached key after 5 minutes of no crypto operations */
+const KEY_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000
 let keyInactivityTimer: ReturnType<typeof setTimeout> | null = null
+
+function wipeMasterKeyFromMemory() {
+  cachedMasterKey = null
+  cachedViewKeypair = null
+  masterKeyDeterministic = false
+  sessionStorage.removeItem(MASTER_KEY_SESSION)
+  keyInactivityTimer = null
+  // Also clear Falcon cache on inactivity timeout
+  import('./falcon').then(m => m.clearFalconCache()).catch(e => console.warn('[Falcon] Failed to clear cache:', e))
+}
 
 function resetKeyInactivityTimer() {
   if (keyInactivityTimer) clearTimeout(keyInactivityTimer)
-  keyInactivityTimer = setTimeout(() => {
-    cachedMasterKey = null
-    cachedViewKeypair = null
-    masterKeyDeterministic = false
-    sessionStorage.removeItem(MASTER_KEY_SESSION)
-    keyInactivityTimer = null
-  }, KEY_INACTIVITY_TIMEOUT_MS)
+  keyInactivityTimer = setTimeout(wipeMasterKeyFromMemory, KEY_INACTIVITY_TIMEOUT_MS)
 }
+
 
 /** Get or derive the view keypair from the cached master key */
 export async function getViewKeypair(): Promise<{ privateKey: Uint8Array; publicKey: Uint8Array } | null> {
@@ -838,11 +991,16 @@ export function deriveDeposit(
 let _activeWallet = ''
 export function setActiveWallet(addr: string) { _activeWallet = addr }
 
-/** Get the next deposit index for this wallet (global across all tiers) */
-export function getNextDepositIndex(): number {
-  const key = _activeWallet
+/** Get the deposit counter localStorage key for the active wallet */
+function depositCounterKey(): string {
+  return _activeWallet
     ? `privacy_pool_deposit_counter_${_activeWallet}`
     : 'privacy_pool_deposit_counter'
+}
+
+/** Get the next deposit index for this wallet (global across all tiers) */
+function getNextDepositIndex(): number {
+  const key = depositCounterKey()
   // Migrate from old global key if per-wallet key doesn't exist yet
   const globalKey = 'privacy_pool_deposit_counter'
   const globalVal = localStorage.getItem(globalKey)
@@ -852,14 +1010,30 @@ export function getNextDepositIndex(): number {
   return parseInt(localStorage.getItem(key) || '0', 10)
 }
 
-/** Increment the deposit counter after a successful deposit */
-export function incrementDepositIndex(): void {
-  const key = _activeWallet
-    ? `privacy_pool_deposit_counter_${_activeWallet}`
-    : 'privacy_pool_deposit_counter'
-  const current = getNextDepositIndex()
-  localStorage.setItem(key, (current + 1).toString())
+/**
+ * Atomically claim the next deposit index using Web Locks API for cross-tab safety.
+ * Falls back to non-atomic localStorage if navigator.locks is unavailable.
+ */
+export async function claimNextDepositIndex(): Promise<number> {
+  const key = depositCounterKey()
+  const claim = () => {
+    // Migrate if needed
+    const globalKey = 'privacy_pool_deposit_counter'
+    const globalVal = localStorage.getItem(globalKey)
+    if (_activeWallet && globalVal && !localStorage.getItem(key)) {
+      localStorage.setItem(key, globalVal)
+    }
+    const idx = parseInt(localStorage.getItem(key) || '0', 10)
+    localStorage.setItem(key, (idx + 1).toString())
+    return idx
+  }
+
+  if (navigator.locks) {
+    return navigator.locks.request('privacy_deposit_counter', () => claim())
+  }
+  return claim()
 }
+
 
 /**
  * Recover notes by scanning all pool tiers for matching commitments.
@@ -992,13 +1166,20 @@ export async function recoverNotes(
   // This must track the derivation index (not match count), because spent notes
   // from privateSend/withdrawals also consumed derivation indices.
   if (highestDerivationIndex >= 0) {
-    const newCounter = highestDerivationIndex + 1
-    const current = getNextDepositIndex()
-    if (newCounter > current) {
-      const counterKey = _activeWallet
-        ? `privacy_pool_deposit_counter_${_activeWallet}`
-        : 'privacy_pool_deposit_counter'
-      localStorage.setItem(counterKey, newCounter.toString())
+    const updateCounter = () => {
+      const newCounter = highestDerivationIndex + 1
+      const current = getNextDepositIndex()
+      if (newCounter > current) {
+        const counterKey = _activeWallet
+          ? `privacy_pool_deposit_counter_${_activeWallet}`
+          : 'privacy_pool_deposit_counter'
+        localStorage.setItem(counterKey, newCounter.toString())
+      }
+    }
+    if (navigator.locks) {
+      await navigator.locks.request('privacy_deposit_counter', () => updateCounter())
+    } else {
+      updateCounter()
     }
   }
 
@@ -1077,8 +1258,17 @@ async function verifyPasswordMarker(derived: Uint8Array, markerHex: string): Pro
   }
 }
 
+/** Password attempt throttle — delays after repeated failures */
+let _pwdFailCount = 0
+
 /** Derive and cache a master key from a user-provided password */
 export async function deriveMasterKeyFromPassword(password: string): Promise<bigint> {
+  // Throttle after 5 consecutive failures: 1s delay per failure beyond 5
+  if (_pwdFailCount >= 5) {
+    const delay = (_pwdFailCount - 4) * 1000
+    await new Promise(r => setTimeout(r, Math.min(delay, 10_000)))
+  }
+
   await initMimc()
 
   let salt: Uint8Array
@@ -1087,15 +1277,27 @@ export async function deriveMasterKeyFromPassword(password: string): Promise<big
   if (existingSaltHex) {
     // Existing password — verify via AEAD decryption (no hash stored)
     salt = Uint8Array.from(existingSaltHex.match(/.{2}/g)!.map(b => parseInt(b, 16)))
-    const derived = await deriveKeyFromPassword(password, salt)
+    let derived: Uint8Array
+    try {
+      derived = await deriveKeyFromPassword(password, salt)
+    } catch {
+      _pwdFailCount++
+      throw new Error('Incorrect password')
+    }
 
     const storedMarker = localStorage.getItem(PWD_VERIFY_KEY)
     if (storedMarker) {
-      await verifyPasswordMarker(derived, storedMarker)
+      try {
+        await verifyPasswordMarker(derived, storedMarker)
+      } catch {
+        _pwdFailCount++
+        throw new Error('Incorrect password')
+      }
     }
     // Migrate: remove legacy hash if present
     localStorage.removeItem('privacy_pool_pwd_hash')
 
+    _pwdFailCount = 0 // Reset on success
     const masterKey = bytesToScalar(derived) % BN254_R
     masterKeyDeterministic = true
     cachedMasterKey = masterKey
@@ -1125,16 +1327,13 @@ export async function deriveMasterKeyFromPassword(password: string): Promise<big
   }
 }
 
-/** Clear master key cache (on wallet disconnect) */
+/** Clear master key from memory (on wallet disconnect, tab hide, or manual wipe) */
 export function clearMasterKey(): void {
-  cachedMasterKey = null
-  cachedViewKeypair = null
-  masterKeyDeterministic = false
-  sessionStorage.removeItem(MASTER_KEY_SESSION)
-  if (keyInactivityTimer) {
-    clearTimeout(keyInactivityTimer)
-    keyInactivityTimer = null
-  }
+  if (keyInactivityTimer) clearTimeout(keyInactivityTimer)
+  wipeMasterKeyFromMemory()
+  // Clear Falcon cached keypair/program when master key is wiped
+  // Dynamic import to avoid circular dependency (falcon.ts imports from privacy.ts)
+  import('./falcon').then(m => m.clearFalconCache()).catch(e => console.warn('[Falcon] Failed to clear cache:', e))
   // Revoke cached zkey blob URLs to free memory
   for (const blobUrl of verifiedZkeyBlobUrls.values()) {
     URL.revokeObjectURL(blobUrl)

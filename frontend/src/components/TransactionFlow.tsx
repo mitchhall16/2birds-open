@@ -1,14 +1,17 @@
 import { useState, useEffect, useRef } from 'react'
 import { useWallet } from '@txnlab/use-wallet-react'
+import { useToast } from '../contexts/ToastContext'
 import { useTransaction, type TxStage } from '../hooks/useTransaction'
 import { CostBreakdown } from './CostBreakdown'
 import { txnUrl, DENOMINATION_TIERS, type DenominationTier, SUBSIDY_TIERS, TREASURY_ADDRESS } from '../lib/config'
-import { loadNotes, removeNote, deriveMasterKey, deriveMasterKeyFromPassword, getCachedMasterKey, recoverNotes, initMimc, PasswordRequiredError, hasPasswordKey, type DepositNote } from '../lib/privacy'
+import { loadNotes, removeNote, removeNoteByCommitment, deriveMasterKey, deriveMasterKeyFromPassword, getCachedMasterKey, clearMasterKey, recoverNotes, initMimc, PasswordRequiredError, hasPasswordKey, exportNotesBackup, importNotesBackup, isNoteSpent, type DepositNote } from '../lib/privacy'
 import { PasswordModal } from './PasswordModal'
 import { NoteBackup } from './NoteBackup'
 import { ALGOD_CONFIG, POOL_CONTRACTS } from '../lib/config'
 import { isPrivacyAddress } from '../lib/address'
 import { privacyAddressFromWallet } from '../lib/address'
+import { useFalcon } from '../contexts/FalconContext'
+import { sweepFalconToWallet } from '../lib/falcon'
 import algosdk from 'algosdk'
 
 interface TransactionFlowProps {
@@ -22,6 +25,7 @@ type Tab = 'deposit' | 'send' | 'manage' | 'convert'
 
 export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalance }: TransactionFlowProps) {
   const { activeAddress, signData, algodClient } = useWallet()
+  const { addToast } = useToast()
   const tx = useTransaction()
   const [tab, setTab] = useState<Tab>('deposit')
   const [selectedTier, setSelectedTier] = useState<DenominationTier>(DENOMINATION_TIERS[2]) // default 1.0 ALGO
@@ -39,6 +43,9 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
   const [passwordError, setPasswordError] = useState('')
   const [privacyAcknowledged, setPrivacyAcknowledged] = useState(false)
   const [selectedSubsidy, setSelectedSubsidy] = useState<bigint>(0n)
+  const [splitNote, setSplitNote] = useState<bigint | null>(null)
+  const [combineNote1, setCombineNote1] = useState<bigint | null>(null)
+  const [combineNote2, setCombineNote2] = useState<bigint | null>(null)
   const prevStage = useRef<TxStage>('idle')
 
   // Load notes, treasury balance, and pool indices on mount
@@ -49,6 +56,10 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
   const [scanningChain, setScanningChain] = useState(false)
   const [scanResult, setScanResult] = useState<{ recovered: number; newNotes: number } | null>(null)
   const [privacyAddress, setPrivacyAddress] = useState<string | null>(null)
+
+  // Falcon post-quantum mode
+  const falcon = useFalcon()
+  const [sweeping, setSweeping] = useState(false)
 
   // Derive privacy address when wallet is connected
   useEffect(() => {
@@ -64,6 +75,15 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
       tx.refreshStaleNotes().catch(console.error)
     }
   }, [tab, activeAddress])
+
+  // Clear master key from memory when user leaves the tab (XSS mitigation)
+  useEffect(() => {
+    function handleVisibility() {
+      if (document.hidden) clearMasterKey()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [])
 
   const tierAmount = Number(selectedTier.microAlgos) / 1_000_000
   const isValidDest = destination.length > 0 && (algosdk.isValidAddress(destination) || isPrivacyAddress(destination))
@@ -93,7 +113,7 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
     try {
       await action()
     } catch (err) {
-      if (err instanceof PasswordRequiredError) {
+      if (err instanceof PasswordRequiredError || (err as any)?.name === 'PasswordRequiredError') {
         setPendingAction(() => action)
         setShowPasswordModal(true)
         setPasswordError('')
@@ -106,16 +126,24 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
   async function handlePasswordSubmit(password: string) {
     try {
       await deriveMasterKeyFromPassword(password)
-      setShowPasswordModal(false)
-      setPasswordError('')
-      // Retry the pending action now that master key is cached
-      if (pendingAction) {
-        const action = pendingAction
-        setPendingAction(null)
-        await action()
-      }
     } catch (err: any) {
       setPasswordError(err?.message || 'Failed to derive key')
+      return
+    }
+    setShowPasswordModal(false)
+    setPasswordError('')
+    // Retry the pending action now that master key is cached
+    if (pendingAction) {
+      const action = pendingAction
+      setPendingAction(null)
+      try {
+        await action()
+      } catch (err: any) {
+        // Deposit/withdraw handle their own errors via toast + state,
+        // but if something unexpected escapes, show it
+        console.error('Action failed after password:', err)
+        addToast('error', err?.message || 'Operation failed')
+      }
     }
   }
 
@@ -123,6 +151,7 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
     setShowPasswordModal(false)
     setPendingAction(null)
     setPasswordError('')
+    tx.reset()
   }
 
   async function handleDeposit() {
@@ -236,10 +265,32 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
         <button className={`tx-tab ${tab === 'manage' ? 'tx-tab--active' : ''}`} onClick={() => { setTab('manage'); refreshNotes() }}>
           Manage{notes.length > 0 ? ` (${notes.length})` : ''}
         </button>
-        <button className={`tx-tab ${tab === 'convert' ? 'tx-tab--active' : ''}`} onClick={() => setTab('convert')}>
+        <button className={`tx-tab ${tab === 'convert' ? 'tx-tab--active' : ''}`} onClick={() => { setTab('convert'); refreshNotes() }}>
           Convert
         </button>
       </div>
+
+      {/* Falcon funding banner — shown when quantum-safe mode is enabled but address has no funds */}
+      {falcon.enabled && falcon.account && !falcon.funded && isIdleUI && (
+        <div className="tx-info-box" style={{ borderColor: 'var(--accent)', marginBottom: 16 }}>
+          <strong>Quantum-Safe Mode Active</strong>
+          <br />
+          Fund your Falcon address to start using post-quantum signing.
+          <div style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 8, wordBreak: 'break-all', color: 'var(--text-secondary)' }}>
+            {falcon.account.address}
+          </div>
+          <button
+            className="manage-btn manage-btn--copy"
+            style={{ marginTop: 8 }}
+            onClick={() => {
+              navigator.clipboard.writeText(falcon.account!.address)
+              addToast('success', 'Falcon address copied')
+            }}
+          >
+            Copy Address
+          </button>
+        </div>
+      )}
 
       {/* ── Deposit / Send tabs ── */}
       {(tab === 'deposit' || tab === 'send') && isIdleUI && (
@@ -454,10 +505,22 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                           {isValidManageDest && (
                             <CostBreakdown amount={noteAlgo} mode="withdraw" subsidyActive={tx.subsidyActive} />
                           )}
+                          {(() => {
+                            const notePool = POOL_CONTRACTS[note.denomination.toString()]
+                            const poolDeposits = notePool ? (tx.poolNextIndices.get(notePool.appId) ?? 0) : 0
+                            return poolDeposits < 5 ? (
+                              <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 4 }}>
+                                Pool has {poolDeposits} deposit{poolDeposits === 1 ? '' : 's'} — withdrawal blocked for privacy (need 5+)
+                              </div>
+                            ) : null
+                          })()}
                           <div className="manage-note__actions">
                             <button
                               className="manage-btn manage-btn--send"
-                              disabled={!isValidManageDest}
+                              disabled={!isValidManageDest || (() => {
+                                const notePool = POOL_CONTRACTS[note.denomination.toString()]
+                                return notePool ? (tx.poolNextIndices.get(notePool.appId) ?? 0) < 5 : false
+                              })()}
                               onClick={() => handleManageSend(note.commitment)}
                             >
                               Send
@@ -531,6 +594,86 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
               </button>
             </div>
           )}
+
+          {/* Falcon quantum-safe mode */}
+          <div className="manage-recovery-section" style={{ marginBottom: 16 }}>
+            <div className="manage-recovery-section__header">Quantum-Safe Mode</div>
+            <label className="tx-relayer-toggle" style={{ marginTop: 8 }}>
+              <input
+                type="checkbox"
+                checked={falcon.enabled}
+                onChange={e => falcon.setEnabled(e.target.checked)}
+              />
+              <span>Falcon-1024 Post-Quantum Signing</span>
+            </label>
+            {falcon.enabled && falcon.loading && (
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
+                Deriving Falcon keypair...
+              </div>
+            )}
+            {falcon.enabled && falcon.error && (
+              <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8 }}>
+                {falcon.error}
+              </div>
+            )}
+            {falcon.enabled && falcon.account && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>Falcon Address</div>
+                <div style={{ fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all', color: 'var(--text-primary)' }}>
+                  {falcon.account.address}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+                  <button
+                    className="manage-btn manage-btn--copy"
+                    onClick={() => {
+                      navigator.clipboard.writeText(falcon.account!.address)
+                      addToast('success', 'Falcon address copied')
+                    }}
+                  >
+                    Copy
+                  </button>
+                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    Balance: {(Number(falcon.balance) / 1_000_000).toFixed(3)} ALGO
+                    {falcon.funded ? '' : ' (unfunded)'}
+                  </span>
+                  <button
+                    className="manage-btn manage-btn--copy"
+                    style={{ marginLeft: 'auto' }}
+                    onClick={() => falcon.refresh()}
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {falcon.funded && (
+                  <button
+                    className="manage-btn manage-btn--cancel"
+                    style={{ width: '100%', marginTop: 8 }}
+                    disabled={sweeping}
+                    onClick={async () => {
+                      if (!activeAddress || !falcon.account) return
+                      setSweeping(true)
+                      try {
+                        const client = algodClient ?? new algosdk.Algodv2(ALGOD_CONFIG.token, ALGOD_CONFIG.baseServer, ALGOD_CONFIG.port)
+                        await sweepFalconToWallet(client, falcon.account, activeAddress)
+                        addToast('success', 'Funds swept back to wallet')
+                        await falcon.refresh()
+                      } catch (err: any) {
+                        addToast('error', err?.message || 'Sweep failed')
+                      } finally {
+                        setSweeping(false)
+                      }
+                    }}
+                  >
+                    {sweeping ? 'Sweeping...' : 'Sweep Funds to Wallet'}
+                  </button>
+                )}
+                <div className="manage-recovery-item__desc" style={{ marginTop: 6 }}>
+                  All pool operations signed locally with Falcon-1024 — no wallet popup needed.
+                  Same wallet + password = same Falcon address on any device.
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Privacy address display */}
           {privacyAddress && (
@@ -619,39 +762,264 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                 Re-syncs the Merkle trees from on-chain data. Needed if withdrawals fail with a root mismatch error.
               </div>
             </div>
+
+            <div className="manage-recovery-item" style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="manage-btn manage-btn--recover"
+                style={{ flex: 1 }}
+                disabled={notes.length === 0}
+                onClick={async () => {
+                  const pw = prompt('Enter a password to encrypt your backup:')
+                  if (!pw || pw.length < 12) {
+                    addToast('error', 'Password must be at least 12 characters')
+                    return
+                  }
+                  try {
+                    const data = await exportNotesBackup(pw)
+                    const blob = new Blob([data], { type: 'text/plain' })
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `2birds-backup-${new Date().toISOString().slice(0, 10)}.enc`
+                    a.click()
+                    URL.revokeObjectURL(url)
+                    addToast('success', `Exported ${notes.length} encrypted note${notes.length > 1 ? 's' : ''}`)
+                  } catch (err: any) {
+                    addToast('error', err?.message || 'Export failed')
+                  }
+                }}
+              >
+                Export Backup
+              </button>
+              <button
+                className="manage-btn manage-btn--recover"
+                style={{ flex: 1 }}
+                onClick={() => {
+                  const input = document.createElement('input')
+                  input.type = 'file'
+                  input.accept = '.enc,.txt'
+                  input.onchange = async () => {
+                    const file = input.files?.[0]
+                    if (!file) return
+                    const pw = prompt('Enter the backup password:')
+                    if (!pw) return
+                    try {
+                      const text = await file.text()
+                      const count = await importNotesBackup(text, pw)
+                      if (count > 0) {
+                        addToast('success', `Imported ${count} note${count > 1 ? 's' : ''}. Checking on-chain status...`)
+                        // Validate imported notes against chain — remove already-spent ones
+                        const client = new algosdk.Algodv2(ALGOD_CONFIG.token, ALGOD_CONFIG.baseServer, ALGOD_CONFIG.port)
+                        const allNotes = await loadNotes()
+                        let spentCount = 0
+                        for (const n of allNotes) {
+                          try {
+                            if (await isNoteSpent(client, n)) {
+                              await removeNoteByCommitment(n.commitment)
+                              spentCount++
+                            }
+                          } catch { /* skip check failures */ }
+                        }
+                        if (spentCount > 0) addToast('info', `Removed ${spentCount} already-spent note${spentCount > 1 ? 's' : ''}`)
+                        refreshNotes()
+                      } else {
+                        addToast('success', 'No new notes to import')
+                      }
+                    } catch (err: any) {
+                      addToast('error', err?.message || 'Import failed')
+                    }
+                  }
+                  input.click()
+                }}
+              >
+                Import Backup
+              </button>
+            </div>
+            <div className="manage-recovery-item__desc">
+              Export your notes as a backup file. Import to restore on another device.
+            </div>
           </div>
         </>
       )}
 
       {/* ── Convert tab (split/combine) ── */}
-      {tab === 'convert' && isIdleUI && (
-        <div className="tx-convert-section">
-          <div className="tx-info-box">
-            <strong>Split &amp; Combine</strong> — Convert between denomination tiers across pools.
-            Split breaks a larger note into two smaller ones. Combine merges two smaller notes into one larger note.
-          </div>
-          <div className="tx-convert-grid">
-            <div className="tx-convert-card">
-              <div className="tx-convert-card__title">Split</div>
-              <div className="tx-convert-card__desc">1.0 ALGO → 2 × 0.5 ALGO</div>
-              <div className="tx-convert-card__desc">0.5 ALGO → 5 × 0.1 ALGO (future)</div>
-              <button className="manage-btn manage-btn--recover" disabled style={{ width: '100%', marginTop: 12 }}>
-                Coming Soon
-              </button>
-              <div className="tx-convert-card__note">Requires split circuit deployment</div>
+      {tab === 'convert' && isIdleUI && (() => {
+        const MIN_POOL_DEPOSITS_UI = 5
+        const splittableNotes = notes.filter(n => {
+          const half = n.denomination / 2n
+          return DENOMINATION_TIERS.some(t => t.microAlgos === half)
+        })
+        const combinableNotes = notes.filter(n => {
+          const doubled = n.denomination * 2n
+          return DENOMINATION_TIERS.some(t => t.microAlgos === doubled)
+        })
+        // Group combinable notes by denomination for pairing
+        const combinableDenoms = new Map<string, typeof combinableNotes>()
+        for (const n of combinableNotes) {
+          const key = n.denomination.toString()
+          const arr = combinableDenoms.get(key) || []
+          arr.push(n)
+          combinableDenoms.set(key, arr)
+        }
+        // Only show denominations with 2+ notes
+        const pairableDenoms = Array.from(combinableDenoms.entries()).filter(([, arr]) => arr.length >= 2)
+
+        // Check pool sizes for split/combine eligibility
+        const getPoolDeposits = (microAlgos: bigint) => {
+          const pool = POOL_CONTRACTS[microAlgos.toString()]
+          return pool ? (tx.poolNextIndices.get(pool.appId) ?? 0) : 0
+        }
+        const splitSourcePoolLow = splittableNotes.length > 0 && getPoolDeposits(splittableNotes[0].denomination) < MIN_POOL_DEPOSITS_UI
+        const combineSourcePoolLow = pairableDenoms.length > 0 && getPoolDeposits(BigInt(pairableDenoms[0][0])) < MIN_POOL_DEPOSITS_UI
+
+        return (
+          <div className="tx-convert-section">
+            <div className="tx-info-box">
+              <strong>Split &amp; Combine</strong> — Convert between denomination tiers.
+              Split breaks a larger note into two smaller ones. Combine merges two smaller notes into one larger note.
             </div>
-            <div className="tx-convert-card">
-              <div className="tx-convert-card__title">Combine</div>
-              <div className="tx-convert-card__desc">2 × 0.5 ALGO → 1.0 ALGO</div>
-              <div className="tx-convert-card__desc">5 × 0.1 ALGO → 0.5 ALGO (future)</div>
-              <button className="manage-btn manage-btn--recover" disabled style={{ width: '100%', marginTop: 12 }}>
-                Coming Soon
-              </button>
-              <div className="tx-convert-card__note">Requires combine circuit deployment</div>
+            <div className="tx-convert-grid">
+              {/* Split card */}
+              <div className="tx-convert-card">
+                <div className="tx-convert-card__title">Split</div>
+                <div className="tx-convert-card__desc">1.0 ALGO → 2 × 0.5 ALGO</div>
+                {splittableNotes.length > 0 ? (
+                  <>
+                    <select
+                      className="tx-field__input"
+                      style={{ marginTop: 8 }}
+                      value={splitNote?.toString() ?? ''}
+                      onChange={e => setSplitNote(e.target.value ? BigInt(e.target.value) : null)}
+                    >
+                      <option value="">Select a note to split...</option>
+                      {splittableNotes.map((n, i) => (
+                        <option key={i} value={n.commitment.toString()}>
+                          {(Number(n.denomination) / 1_000_000).toFixed(1)} ALGO — {new Date(n.timestamp).toLocaleDateString()}
+                        </option>
+                      ))}
+                    </select>
+                    {splitNote !== null && (() => {
+                      const note = splittableNotes.find(n => n.commitment === splitNote)
+                      if (!note) return null
+                      const srcAlgo = (Number(note.denomination) / 1_000_000).toFixed(1)
+                      const dstAlgo = (Number(note.denomination / 2n) / 1_000_000).toFixed(1)
+                      return (
+                        <div className="tx-convert-card__preview">
+                          {srcAlgo} ALGO → 2 × {dstAlgo} ALGO
+                        </div>
+                      )
+                    })()}
+                    {splitSourcePoolLow && (
+                      <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 8 }}>
+                        Pool has fewer than {MIN_POOL_DEPOSITS_UI} deposits — split blocked for privacy
+                      </div>
+                    )}
+                    <button
+                      className={`manage-btn manage-btn--send`}
+                      disabled={!splitNote || splitSourcePoolLow}
+                      style={{ width: '100%', marginTop: 12 }}
+                      onClick={() => {
+                        if (!splitNote) return
+                        withPasswordFallback(() => tx.split(splitNote))
+                        setSplitNote(null)
+                      }}
+                    >
+                      {splitSourcePoolLow ? 'Blocked — Low Privacy' : 'Split'}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button className="manage-btn manage-btn--recover" disabled style={{ width: '100%', marginTop: 12 }}>
+                      No splittable notes
+                    </button>
+                    <div className="tx-convert-card__note">Deposit 1.0 ALGO first</div>
+                  </>
+                )}
+              </div>
+
+              {/* Combine card */}
+              <div className="tx-convert-card">
+                <div className="tx-convert-card__title">Combine</div>
+                <div className="tx-convert-card__desc">2 × 0.5 ALGO → 1.0 ALGO</div>
+                {pairableDenoms.length > 0 ? (
+                  <>
+                    {pairableDenoms.map(([denomStr, denomNotes]) => {
+                      const denomAlgo = (Number(denomStr) / 1_000_000).toFixed(1)
+                      const destAlgo = (Number(denomStr) * 2 / 1_000_000).toFixed(1)
+                      return (
+                        <div key={denomStr}>
+                          <select
+                            className="tx-field__input"
+                            style={{ marginTop: 8 }}
+                            value={combineNote1?.toString() ?? ''}
+                            onChange={e => {
+                              setCombineNote1(e.target.value ? BigInt(e.target.value) : null)
+                              setCombineNote2(null)
+                            }}
+                          >
+                            <option value="">Note 1...</option>
+                            {denomNotes.map((n, i) => (
+                              <option key={i} value={n.commitment.toString()}>
+                                {denomAlgo} ALGO — {new Date(n.timestamp).toLocaleDateString()}
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            className="tx-field__input"
+                            style={{ marginTop: 4 }}
+                            value={combineNote2?.toString() ?? ''}
+                            onChange={e => setCombineNote2(e.target.value ? BigInt(e.target.value) : null)}
+                            disabled={!combineNote1}
+                          >
+                            <option value="">Note 2...</option>
+                            {denomNotes
+                              .filter(n => n.commitment !== combineNote1)
+                              .map((n, i) => (
+                                <option key={i} value={n.commitment.toString()}>
+                                  {denomAlgo} ALGO — {new Date(n.timestamp).toLocaleDateString()}
+                                </option>
+                              ))}
+                          </select>
+                          {combineNote1 !== null && combineNote2 !== null && (
+                            <div className="tx-convert-card__preview">
+                              2 × {denomAlgo} ALGO → {destAlgo} ALGO
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                    {combineSourcePoolLow && (
+                      <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 8 }}>
+                        Pool has fewer than {MIN_POOL_DEPOSITS_UI} deposits — combine blocked for privacy
+                      </div>
+                    )}
+                    <button
+                      className="manage-btn manage-btn--send"
+                      disabled={!combineNote1 || !combineNote2 || combineSourcePoolLow}
+                      style={{ width: '100%', marginTop: 12 }}
+                      onClick={() => {
+                        if (!combineNote1 || !combineNote2) return
+                        withPasswordFallback(() => tx.combine(combineNote1, combineNote2))
+                        setCombineNote1(null)
+                        setCombineNote2(null)
+                      }}
+                    >
+                      {combineSourcePoolLow ? 'Blocked — Low Privacy' : 'Combine'}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button className="manage-btn manage-btn--recover" disabled style={{ width: '100%', marginTop: 12 }}>
+                      No combinable notes
+                    </button>
+                    <div className="tx-convert-card__note">Need 2+ notes of the same denomination (0.5 ALGO)</div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* ── In-progress (shared across all tabs) ── */}
       {isProcessing && (
@@ -684,6 +1052,9 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
           )}
           <button className="tx-execute tx-execute--loading" disabled style={{ marginTop: 20 }}>
             {tx.stage === 'waiting_batch' ? 'Waiting...' : tx.stage === 'depositing' ? 'Depositing...' : tx.stage === 'generating_proof' ? 'Proving...' : 'Sending...'}
+          </button>
+          <button className="manage-btn manage-btn--cancel" style={{ marginTop: 10, width: '100%' }} onClick={handleReset}>
+            Cancel
           </button>
         </div>
       )}

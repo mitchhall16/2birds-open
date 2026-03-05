@@ -1,7 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useWallet } from '@txnlab/use-wallet-react'
 import algosdk from 'algosdk'
-import { CONTRACTS, ALGOD_CONFIG, FEES, isValidTier, DENOMINATION_TIERS, getPoolForTier, POOL_CONTRACTS, RELAYERS, pickRelayer, BATCH_WINDOW_MINUTES, TREASURY_ADDRESS, PROTOCOL_FEE, STALE_NOTE_THRESHOLD, SUBSIDY_TIERS, USE_PLONK_LSIG, MIN_SOAK_DEPOSITS, OPERATION_COOLDOWN_MS, CLUSTER_WARNING_THRESHOLD, WITHDRAW_JITTER_MS } from '../lib/config'
+import { CONTRACTS, ALGOD_CONFIG, FEES, isValidTier, DENOMINATION_TIERS, getPoolForTier, POOL_CONTRACTS, RELAYERS, pickRelayer, BATCH_WINDOW_MINUTES, TREASURY_ADDRESS, PROTOCOL_FEE, STALE_NOTE_THRESHOLD, SUBSIDY_TIERS, USE_PLONK_LSIG, MIN_SOAK_DEPOSITS, OPERATION_COOLDOWN_MS, CLUSTER_WARNING_THRESHOLD, WITHDRAW_JITTER_MS, FALCON_EXTRA_FEE } from '../lib/config'
+import { useFalcon, type DeriveResult } from '../contexts/FalconContext'
+import { createFalconSigner } from '../lib/falcon'
 import { useToast } from '../contexts/ToastContext'
 import { humanizeError, withRetry } from '../lib/errorMessages'
 import {
@@ -10,8 +12,7 @@ import {
   deriveMasterKey,
   getCachedMasterKey,
   getViewKeypair,
-  getNextDepositIndex,
-  incrementDepositIndex,
+  claimNextDepositIndex,
   computeNullifierHash,
   scalarToBytes,
   bytesToScalar,
@@ -83,6 +84,8 @@ interface UseTransactionReturn extends TxState {
   withdraw: (noteCommitment: bigint, destinationAddr: string) => Promise<void>
   privateSend: (microAlgos: bigint, destinationAddr: string, skipBatchWait?: boolean, subsidyMicroAlgos?: bigint) => Promise<void>
   churnNote: (note: DepositNote) => Promise<void>
+  split: (noteCommitment: bigint) => Promise<void>
+  combine: (noteCommitment1: bigint, noteCommitment2: bigint) => Promise<void>
   skipBatchWait: () => void
   reset: () => Promise<void>
   refreshNotes: () => Promise<void>
@@ -121,7 +124,8 @@ async function loadPlonkVerifier(
     const verifier = await compilePlonkVerifier(client, tealSource, vkChunks)
     _plonkCache.set(circuit, verifier)
     return verifier
-  } catch {
+  } catch (err) {
+    console.error(`[PLONK] Failed to load ${circuit} verifier:`, err)
     _plonkCache.set(circuit, null)
     return null
   }
@@ -164,7 +168,13 @@ async function signPlonkMixedGroup(
     { length: group.length - PLONK_LSIG_GROUP_SIZE },
     (_, i) => i + PLONK_LSIG_GROUP_SIZE,
   )
-  const walletResult = await walletSigner(group, walletIndices)
+  // Timeout: if wallet doesn't respond in 90s, throw instead of hanging forever
+  const walletResult = await Promise.race([
+    walletSigner(group, walletIndices),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Wallet did not respond — try reconnecting Pera and retry')), 90_000)
+    ),
+  ])
   return group.map((_, i) =>
     i < PLONK_LSIG_GROUP_SIZE ? lsigSigned[i] : walletResult[i]
   )
@@ -261,6 +271,47 @@ export function useTransaction(): UseTransactionReturn {
       ALGOD_CONFIG.port,
     )
   }, [algodClient])
+
+  // ── Falcon post-quantum mode ──
+  const falcon = useFalcon()
+
+  /**
+   * Resolve effective sender and signer.
+   * When Falcon mode is enabled + funded, uses Falcon LogicSig.
+   * Otherwise, falls back to wallet sender/signer.
+   * If Falcon is enabled but not yet derived, derives from master key.
+   */
+  async function ensureSigner(): Promise<{
+    sender: string
+    signer: (txns: algosdk.Transaction[], indices: number[]) => Promise<Uint8Array[]>
+    isFalcon: boolean
+  }> {
+    if (falcon.enabled) {
+      // Already derived and funded
+      if (falcon.account && falcon.funded && falcon.signer) {
+        return { sender: falcon.account.address, signer: falcon.signer, isFalcon: true }
+      }
+      // Need to derive
+      if (!falcon.account) {
+        try {
+          const mk = await deriveMasterKey(signData)
+          const result = await falcon.derive(mk)
+          if (result && result.funded) {
+            const signer = createFalconSigner(result.account.program, result.account.privateKey)
+            return { sender: result.account.address, signer, isFalcon: true }
+          }
+        } catch (err) {
+          // Falcon derivation failed (e.g., AVM v12 not available) — fall through to wallet
+          console.warn('[Falcon] Derivation failed, using wallet:', err)
+        }
+      }
+      // Falcon enabled but not usable (not funded, or derivation failed) — use wallet
+    }
+    if (!activeAddress || !transactionSigner) {
+      throw new Error('Wallet not connected')
+    }
+    return { sender: activeAddress, signer: transactionSigner, isFalcon: false }
+  }
 
   /** Read contract global state (with network retry) */
   async function readContractState(client: algosdk.Algodv2, appId: number) {
@@ -369,6 +420,25 @@ export function useTransaction(): UseTransactionReturn {
       }
     }
     return indices
+  }
+
+  /** Minimum pool deposits before allowing withdrawals/sends — prevents trivial deanonymization */
+  const MIN_POOL_DEPOSITS = 5
+
+  /** Check if a pool has enough deposits for meaningful privacy */
+  async function checkPoolSize(client: algosdk.Algodv2, poolAppId: number, operation: string): Promise<void> {
+    try {
+      const state = await readContractState(client, poolAppId)
+      if (state.nextIndex < MIN_POOL_DEPOSITS) {
+        throw new Error(
+          `Pool only has ${state.nextIndex} deposit${state.nextIndex === 1 ? '' : 's'} — need at least ${MIN_POOL_DEPOSITS} for privacy. ` +
+          `${operation} blocked to prevent deanonymization.`
+        )
+      }
+    } catch (err) {
+      if ((err as Error).message.includes('blocked to prevent')) throw err
+      // If we can't read state, allow the operation (don't block on network errors)
+    }
   }
 
   function bytesToHex(bytes: Uint8Array): string {
@@ -489,6 +559,7 @@ export function useTransaction(): UseTransactionReturn {
     note: DepositNote,
     microAlgos: bigint,
     subsidyMicroAlgos: bigint = 0n,
+    falconMode: boolean = false,
   ): Promise<string> {
     const commitmentBytes = scalarToBytes(note.commitment)
 
@@ -512,7 +583,7 @@ export function useTransaction(): UseTransactionReturn {
     const merklePath = getPath(tree, leafIndex)
 
     // Generate deposit insertion ZK proof
-    setState(s => ({ ...s, stage: 'generating_proof', message: 'Generating deposit proof... (10-30 sec)' }))
+    setState(s => ({ ...s, stage: 'generating_proof', message: 'Preparing proof generation...' }))
 
     const proofSystem = USE_PLONK_LSIG ? 'plonk' as const : 'groth16' as const
     const zkeyFile = USE_PLONK_LSIG ? '/circuits/deposit_plonk.zkey' : '/circuits/deposit_final.zkey'
@@ -530,6 +601,7 @@ export function useTransaction(): UseTransactionReturn {
       circuitInput,
       '/circuits/deposit.wasm',
       zkeyFile,
+      (msg) => setState(s => ({ ...s, message: msg })),
     )
 
     const proofBytes = USE_PLONK_LSIG
@@ -577,10 +649,12 @@ export function useTransaction(): UseTransactionReturn {
       )
     } else if (USE_PLONK_LSIG) {
       // PLONK LogicSig group: [lsig×4, payTxn, poolAppCall, ?feeTxn]
+      setState(s => ({ ...s, message: 'Compiling PLONK verifier...' }))
       const plonk = await import('../lib/plonkVerifierLsig')
       const verifier = await loadPlonkVerifier(client, 'deposit')
       if (!verifier) throw new Error('PLONK deposit verifier not available — deploy PLONK verifiers or set VITE_USE_PLONK_LSIG=false')
 
+      setState(s => ({ ...s, message: 'Building transaction group...' }))
       const lsigTxns = plonk.buildPlonkVerifierGroup(verifier, proofBytes, signalsBytes, sender, params)
 
       const payTxn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
@@ -610,8 +684,10 @@ export function useTransaction(): UseTransactionReturn {
 
       algosdk.assignGroupID(depositGroup)
 
-      setState(s => ({ ...s, message: 'Approve deposit in your wallet...' }))
+      setState(s => ({ ...s, message: 'Computing PLONK inverses...' }))
       const inversesBytes = await computePlonkInverses('deposit', proof, publicSignals)
+
+      setState(s => ({ ...s, message: falconMode ? 'Signing deposit with Falcon...' : 'Approve deposit in your wallet...' }))
       const signedTxns = await signPlonkMixedGroup(verifier, depositGroup, proofBytes, inversesBytes, signer)
 
       setState(s => ({ ...s, message: 'Submitting deposit...' }))
@@ -654,9 +730,18 @@ export function useTransaction(): UseTransactionReturn {
       const feeTxn = buildProtocolFeeTxn(sender, params, subsidyMicroAlgos)
       if (feeTxn) depositGroup.push(feeTxn)
 
+      // Groth16 + Falcon: add padding txns for byte budget (~3KB LogicSig)
+      if (falconMode) {
+        while (depositGroup.length < 4) {
+          depositGroup.push(algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+            sender, receiver: sender, amount: 0, suggestedParams: params,
+          }))
+        }
+      }
+
       algosdk.assignGroupID(depositGroup)
 
-      setState(s => ({ ...s, message: 'Approve deposit in your wallet...' }))
+      setState(s => ({ ...s, message: falconMode ? 'Signing deposit with Falcon...' : 'Approve deposit in your wallet...' }))
       const signedTxns = await signer(depositGroup, depositGroup.map((_, i) => i))
 
       setState(s => ({ ...s, message: 'Submitting deposit...' }))
@@ -683,7 +768,12 @@ export function useTransaction(): UseTransactionReturn {
 
   // ── DEPOSIT ──────────────────────────────
   const deposit = useCallback(async (microAlgos: bigint, skipBatchWait?: boolean, subsidyMicroAlgos?: bigint) => {
-    if (!activeAddress || !transactionSigner) {
+    let effectiveSender: string
+    let effectiveSigner: (txns: algosdk.Transaction[], indices: number[]) => Promise<Uint8Array[]>
+    let isFalcon: boolean
+    try {
+      ({ sender: effectiveSender, signer: effectiveSigner, isFalcon } = await ensureSigner())
+    } catch {
       addToast('error', 'Wallet not connected')
       setState(s => ({ ...s, stage: 'error', error: 'Wallet not connected' }))
       return
@@ -725,15 +815,16 @@ export function useTransaction(): UseTransactionReturn {
 
       await initMimc()
 
-      // Pre-check wallet balance before expensive proof generation
+      // Pre-check balance before expensive proof generation
       const subsidy = subsidyMicroAlgos ?? 0n
-      setState(s => ({ ...s, message: 'Checking wallet balance...' }))
-      await checkBalance(client, activeAddress, microAlgos + FEES.deposit + PROTOCOL_FEE + subsidy)
+      const falconFee = isFalcon && !USE_PLONK_LSIG ? FALCON_EXTRA_FEE.groth16Padding : 0n
+      setState(s => ({ ...s, message: 'Checking balance...' }))
+      await checkBalance(client, effectiveSender, microAlgos + FEES.deposit + PROTOCOL_FEE + subsidy + falconFee)
 
       // Derive deterministic note from wallet signature (or use cached master key)
       setState(s => ({ ...s, message: 'Deriving deposit key...' }))
       const masterKey = await deriveMasterKey(signData)
-      const depositIdx = getNextDepositIndex()
+      const depositIdx = await claimNextDepositIndex() // atomic: claims index + increments counter
       const note = deriveDeposit(masterKey, depositIdx, microAlgos, 0)
 
       // Wait for batch window (timing attack mitigation)
@@ -744,7 +835,7 @@ export function useTransaction(): UseTransactionReturn {
       let txId: string | undefined
       for (let attempt = 1; attempt <= MAX_DEPOSIT_RETRIES; attempt++) {
         try {
-          txId = await executeDeposit(client, activeAddress, transactionSigner, pool, note, microAlgos, subsidy)
+          txId = await executeDeposit(client, effectiveSender, effectiveSigner, pool, note, microAlgos, subsidy, isFalcon)
           break // success
         } catch (err) {
           // Always clear tree cache on failure — the in-memory tree has a phantom leaf
@@ -762,9 +853,6 @@ export function useTransaction(): UseTransactionReturn {
         }
       }
 
-      // Increment counter FIRST — if tab crashes after this but before saveNote,
-      // we skip an index (safe) rather than reusing one (duplicate commitment)
-      incrementDepositIndex()
       await saveNote(note)
       recordOperation('deposit')
 
@@ -779,17 +867,195 @@ export function useTransaction(): UseTransactionReturn {
         savedNotes: updatedNotes,
       }))
     } catch (err) {
-      if (err instanceof PasswordRequiredError) throw err
+      if (err instanceof PasswordRequiredError || (err as any)?.name === 'PasswordRequiredError') throw err
       const msg = humanizeError(err)
       console.error('Deposit error:', err)
       addToast('error', msg)
       setState(s => ({ ...s, stage: 'error', error: msg }))
     }
-  }, [activeAddress, transactionSigner, signData, getClient, addToast])
+  }, [activeAddress, transactionSigner, signData, getClient, addToast, falcon])
+
+  /** Build and submit a withdrawal with ZK proof. Returns txId. */
+  async function executeWithdraw(
+    client: algosdk.Algodv2,
+    sender: string,
+    signer: typeof transactionSigner,
+    pool: { appId: number; appAddress: string },
+    note: DepositNote,
+    destinationAddr: string,
+    falconMode: boolean = false,
+  ): Promise<string> {
+    await initMimc()
+
+    // Check if nullifier is already spent
+    const alreadySpent = await isNullifierSpent(client, pool.appId, note.nullifier)
+    if (alreadySpent) {
+      await removeNoteByCommitment(note.commitment)
+      throw new Error('Note already spent on-chain')
+    }
+
+    // Sync local Merkle tree
+    setState(s => ({ ...s, message: 'Syncing Merkle tree...' }))
+    const tree = await incrementalSyncTree(pool.appId)
+    const merklePath = getPath(tree, note.leafIndex)
+    const root = tree.root
+
+    // Generate ZK proof
+    setState(s => ({ ...s, stage: 'generating_proof', message: 'Preparing withdrawal proof...' }))
+
+    const proofSystem = USE_PLONK_LSIG ? 'plonk' as const : 'groth16' as const
+    const zkeyFile = USE_PLONK_LSIG ? '/circuits/withdraw_plonk.zkey' : '/circuits/withdraw_final.zkey'
+
+    const nullifierHash = computeNullifierHash(note.nullifier)
+    const relayerAddr = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY5HFKQ'
+    const relayerFee = 0n
+
+    const circuitInput = {
+      root: root.toString(),
+      nullifierHash: nullifierHash.toString(),
+      recipient: addressToScalar(destinationAddr).toString(),
+      relayer: addressToScalar(relayerAddr).toString(),
+      fee: relayerFee.toString(),
+      amount: note.denomination.toString(),
+      secret: note.secret.toString(),
+      nullifier: note.nullifier.toString(),
+      pathElements: merklePath.pathElements.map(e => e.toString()),
+      pathIndices: merklePath.pathIndices,
+    }
+
+    const { proof, publicSignals } = await generateProof(
+      proofSystem,
+      circuitInput,
+      '/circuits/withdraw.wasm',
+      zkeyFile,
+      (msg) => setState(s => ({ ...s, message: msg })),
+    )
+
+    setState(s => ({ ...s, stage: 'withdrawing', message: 'Building withdrawal transaction...' }))
+
+    const proofBytes = USE_PLONK_LSIG
+      ? (await import('../lib/plonkVerifierLsig')).encodePlonkProof(proof)
+      : encodeProofForVerifier(parseGroth16Proof(proof))
+    const signalsBytes = encodePublicSignals(root, nullifierHash, destinationAddr, relayerAddr, relayerFee, note.denomination)
+    const nullifierHashBytes = scalarToBytes(nullifierHash)
+    const rootBytes = scalarToBytes(root)
+    const recipientSignalBytes = scalarToBytes(addressToScalar(destinationAddr))
+    const relayerSignalBytes = scalarToBytes(addressToScalar(relayerAddr))
+
+    const params = await client.getTransactionParams().do()
+    let txId: string
+
+    if (USE_PLONK_LSIG) {
+      const plonk = await import('../lib/plonkVerifierLsig')
+      const verifier = await loadPlonkVerifier(client, 'withdraw')
+      if (!verifier) throw new Error('PLONK withdraw verifier not available')
+
+      const lsigTxns = plonk.buildPlonkVerifierGroup(verifier, proofBytes, signalsBytes, sender, params)
+
+      const recipientPubKey = algosdk.decodeAddress(destinationAddr).publicKey
+      const relayerPubKey = algosdk.decodeAddress(relayerAddr).publicKey
+
+      const withdrawAppCall = algosdk.makeApplicationCallTxnFromObject({
+        sender,
+        appIndex: pool.appId,
+        onComplete: algosdk.OnApplicationComplete.NoOpOC,
+        appArgs: [
+          METHOD_SELECTORS.withdraw,
+          abiEncodeBytes(nullifierHashBytes),
+          recipientPubKey,
+          relayerPubKey,
+          uint64ToBytes(0n),
+          abiEncodeBytes(rootBytes),
+          abiEncodeBytes(recipientSignalBytes),
+          abiEncodeBytes(relayerSignalBytes),
+        ],
+        accounts: [destinationAddr],
+        boxes: withdrawBoxRefs(pool.appId, nullifierHashBytes, rootBytes),
+        suggestedParams: { ...params, fee: BigInt(2000), flatFee: true },
+      })
+
+      const withdrawGroup = [...lsigTxns, withdrawAppCall]
+      const wFeeTxn = buildProtocolFeeTxn(sender, params)
+      if (wFeeTxn) withdrawGroup.push(wFeeTxn)
+
+      algosdk.assignGroupID(withdrawGroup)
+
+      setState(s => ({ ...s, message: falconMode ? 'Signing withdrawal with Falcon...' : 'Approve withdrawal in your wallet...' }))
+      const inversesBytes = await computePlonkInverses('withdraw', proof, publicSignals)
+      const signedTxns = await signPlonkMixedGroup(verifier, withdrawGroup, proofBytes, inversesBytes, signer)
+
+      txId = withdrawAppCall.txID()
+      setState(s => ({ ...s, message: 'Submitting withdrawal...' }))
+      await client.sendRawTransaction(signedTxns).do()
+    } else {
+      const verifierAppCall = algosdk.makeApplicationCallTxnFromObject({
+        sender,
+        appIndex: VERIFIER_APP_ID,
+        onComplete: algosdk.OnApplicationComplete.NoOpOC,
+        appArgs: [proofBytes, signalsBytes],
+        foreignApps: [BUDGET_HELPER_APP_ID],
+        suggestedParams: { ...params, fee: FEES.withdrawVerifierCall, flatFee: true },
+      })
+
+      const recipientPubKey = algosdk.decodeAddress(destinationAddr).publicKey
+      const relayerPubKey = algosdk.decodeAddress(relayerAddr).publicKey
+
+      const withdrawAppCall = algosdk.makeApplicationCallTxnFromObject({
+        sender,
+        appIndex: pool.appId,
+        onComplete: algosdk.OnApplicationComplete.NoOpOC,
+        appArgs: [
+          METHOD_SELECTORS.withdraw,
+          abiEncodeBytes(nullifierHashBytes),
+          recipientPubKey,
+          relayerPubKey,
+          uint64ToBytes(0n),
+          abiEncodeBytes(rootBytes),
+          abiEncodeBytes(recipientSignalBytes),
+          abiEncodeBytes(relayerSignalBytes),
+        ],
+        accounts: [destinationAddr],
+        boxes: withdrawBoxRefs(pool.appId, nullifierHashBytes, rootBytes),
+        suggestedParams: { ...params, fee: BigInt(2000), flatFee: true },
+      })
+
+      const withdrawGroup: algosdk.Transaction[] = [verifierAppCall, withdrawAppCall]
+      const wFeeTxn = buildProtocolFeeTxn(sender, params)
+      if (wFeeTxn) withdrawGroup.push(wFeeTxn)
+
+      // Groth16 + Falcon: add padding txns for byte budget
+      if (falconMode) {
+        while (withdrawGroup.length < 4) {
+          withdrawGroup.push(algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+            sender, receiver: sender, amount: 0, suggestedParams: params,
+          }))
+        }
+      }
+
+      algosdk.assignGroupID(withdrawGroup)
+
+      setState(s => ({ ...s, message: falconMode ? 'Signing withdrawal with Falcon...' : 'Approve withdrawal in your wallet...' }))
+      const signedTxns = await signer(withdrawGroup, withdrawGroup.map((_, i) => i))
+
+      txId = withdrawAppCall.txID()
+      setState(s => ({ ...s, message: 'Submitting withdrawal...' }))
+      await client.sendRawTransaction(signedTxns).do()
+    }
+
+    setState(s => ({ ...s, message: 'Waiting for confirmation...' }))
+    await algosdk.waitForConfirmation(client, txId, 4)
+
+    return txId
+  }
 
   // ── WITHDRAW ─────────────────────────────
   const withdraw = useCallback(async (noteCommitment: bigint, destinationAddr: string) => {
-    if (!activeAddress || !transactionSigner) {
+    let effectiveSender: string
+    let effectiveSigner: (txns: algosdk.Transaction[], indices: number[]) => Promise<Uint8Array[]>
+    let isFalcon: boolean
+    try {
+      ({ sender: effectiveSender, signer: effectiveSigner, isFalcon } = await ensureSigner())
+    } catch {
       addToast('error', 'Wallet not connected')
       setState(s => ({ ...s, stage: 'error', error: 'Wallet not connected' }))
       return
@@ -831,6 +1097,9 @@ export function useTransaction(): UseTransactionReturn {
       if (clusterWarning) {
         addToast('error', clusterWarning)
       }
+
+      // Privacy check: block if pool has too few deposits
+      await checkPoolSize(client, pool.appId, 'Withdrawal')
 
       // Anti-correlation: soak time — ensure enough deposits have occurred since this note
       const contractState = await readContractState(client, pool.appId)
@@ -903,6 +1172,7 @@ export function useTransaction(): UseTransactionReturn {
         circuitInput,
         '/circuits/withdraw.wasm',
         zkeyFile,
+        (msg) => setState(s => ({ ...s, message: msg })),
       )
 
       setState(s => ({ ...s, stage: 'withdrawing', message: 'Building withdrawal transaction...' }))
@@ -938,13 +1208,13 @@ export function useTransaction(): UseTransactionReturn {
         if (!verifier) throw new Error('PLONK withdraw verifier not available — deploy PLONK verifiers or set VITE_USE_PLONK_LSIG=false')
 
         const params = await client.getTransactionParams().do()
-        const lsigTxns = plonk.buildPlonkVerifierGroup(verifier, proofBytes, signalsBytes, activeAddress, params)
+        const lsigTxns = plonk.buildPlonkVerifierGroup(verifier, proofBytes, signalsBytes, effectiveSender, params)
 
         const recipientPubKey = algosdk.decodeAddress(destinationAddr).publicKey
         const relayerPubKey = algosdk.decodeAddress(relayerAddr).publicKey
 
         const withdrawAppCall = algosdk.makeApplicationCallTxnFromObject({
-          sender: activeAddress,
+          sender: effectiveSender,
           appIndex: pool.appId,
           onComplete: algosdk.OnApplicationComplete.NoOpOC,
           appArgs: [
@@ -963,14 +1233,14 @@ export function useTransaction(): UseTransactionReturn {
         })
 
         const withdrawGroup = [...lsigTxns, withdrawAppCall]
-        const wFeeTxn = buildProtocolFeeTxn(activeAddress, params)
+        const wFeeTxn = buildProtocolFeeTxn(effectiveSender, params)
         if (wFeeTxn) withdrawGroup.push(wFeeTxn)
 
         algosdk.assignGroupID(withdrawGroup)
 
-        setState(s => ({ ...s, message: 'Approve withdrawal in your wallet...' }))
+        setState(s => ({ ...s, message: isFalcon ? 'Signing withdrawal with Falcon...' : 'Approve withdrawal in your wallet...' }))
         const inversesBytes = await computePlonkInverses('withdraw', proof, publicSignals)
-        const signedTxns = await signPlonkMixedGroup(verifier, withdrawGroup, proofBytes, inversesBytes, transactionSigner)
+        const signedTxns = await signPlonkMixedGroup(verifier, withdrawGroup, proofBytes, inversesBytes, effectiveSigner)
 
         txId = withdrawAppCall.txID()
         setState(s => ({ ...s, message: 'Submitting withdrawal...' }))
@@ -983,7 +1253,7 @@ export function useTransaction(): UseTransactionReturn {
         const params = await client.getTransactionParams().do()
 
         const verifierAppCall = algosdk.makeApplicationCallTxnFromObject({
-          sender: activeAddress,
+          sender: effectiveSender,
           appIndex: VERIFIER_APP_ID,
           onComplete: algosdk.OnApplicationComplete.NoOpOC,
           appArgs: [proofBytes, signalsBytes],
@@ -995,7 +1265,7 @@ export function useTransaction(): UseTransactionReturn {
         const relayerPubKey = algosdk.decodeAddress(relayerAddr).publicKey
 
         const withdrawAppCall = algosdk.makeApplicationCallTxnFromObject({
-          sender: activeAddress,
+          sender: effectiveSender,
           appIndex: pool.appId,
           onComplete: algosdk.OnApplicationComplete.NoOpOC,
           appArgs: [
@@ -1014,13 +1284,22 @@ export function useTransaction(): UseTransactionReturn {
         })
 
         const withdrawGroup: algosdk.Transaction[] = [verifierAppCall, withdrawAppCall]
-        const wFeeTxn = buildProtocolFeeTxn(activeAddress, params)
+        const wFeeTxn = buildProtocolFeeTxn(effectiveSender, params)
         if (wFeeTxn) withdrawGroup.push(wFeeTxn)
+
+        // Groth16 + Falcon: add padding txns for byte budget
+        if (isFalcon) {
+          while (withdrawGroup.length < 4) {
+            withdrawGroup.push(algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+              sender: effectiveSender, receiver: effectiveSender, amount: 0, suggestedParams: params,
+            }))
+          }
+        }
 
         algosdk.assignGroupID(withdrawGroup)
 
-        setState(s => ({ ...s, message: 'Approve withdrawal in your wallet...' }))
-        const signedTxns = await transactionSigner(
+        setState(s => ({ ...s, message: isFalcon ? 'Signing withdrawal with Falcon...' : 'Approve withdrawal in your wallet...' }))
+        const signedTxns = await effectiveSigner(
           withdrawGroup,
           withdrawGroup.map((_, i) => i),
         )
@@ -1049,13 +1328,13 @@ export function useTransaction(): UseTransactionReturn {
         savedNotes: wNotes,
       }))
     } catch (err) {
-      if (err instanceof PasswordRequiredError) throw err
+      if (err instanceof PasswordRequiredError || (err as any)?.name === 'PasswordRequiredError') throw err
       const msg = humanizeError(err)
       console.error('Withdraw error:', err)
       addToast('error', msg)
       setState(s => ({ ...s, stage: 'error', error: msg }))
     }
-  }, [activeAddress, transactionSigner, getClient, addToast, useRelayerState, relayerAvailable, signData])
+  }, [activeAddress, transactionSigner, getClient, addToast, useRelayerState, relayerAvailable, signData, falcon])
 
   /** Build and submit a privateSend with ZK combined proof. Returns txId. */
   async function executePrivateSend(
@@ -1068,6 +1347,7 @@ export function useTransaction(): UseTransactionReturn {
     destinationAddr: string,
     recipientViewPubkey?: Uint8Array | null,
     subsidyMicroAlgos: bigint = 0n,
+    falconMode: boolean = false,
   ): Promise<string> {
     // Sync tree and prepare insertion
     setState(s => ({ ...s, message: 'Syncing Merkle tree...' }))
@@ -1111,6 +1391,7 @@ export function useTransaction(): UseTransactionReturn {
       circuitInput,
       '/circuits/privateSend.wasm',
       zkeyFile,
+      (msg) => setState(s => ({ ...s, message: msg })),
     )
 
     // Pre-check: re-read on-chain root after proof gen — if it changed, abort
@@ -1194,7 +1475,7 @@ export function useTransaction(): UseTransactionReturn {
 
       algosdk.assignGroupID(psGroup)
 
-      setState(s => ({ ...s, message: 'Approve transaction in your wallet...' }))
+      setState(s => ({ ...s, message: falconMode ? 'Signing transaction with Falcon...' : 'Approve transaction in your wallet...' }))
       const inversesBytes = await computePlonkInverses('privateSend', proof, publicSignals)
       const signedTxns = await signPlonkMixedGroup(verifier, psGroup, proofBytes, inversesBytes, signer)
 
@@ -1245,9 +1526,18 @@ export function useTransaction(): UseTransactionReturn {
       const psFeeTxn = buildProtocolFeeTxn(sender, params, subsidyMicroAlgos)
       if (psFeeTxn) psGroup.push(psFeeTxn)
 
+      // Groth16 + Falcon: add padding txns for byte budget
+      if (falconMode) {
+        while (psGroup.length < 4) {
+          psGroup.push(algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+            sender, receiver: sender, amount: 0, suggestedParams: params,
+          }))
+        }
+      }
+
       algosdk.assignGroupID(psGroup)
 
-      setState(s => ({ ...s, message: 'Approve transaction in your wallet...' }))
+      setState(s => ({ ...s, message: falconMode ? 'Signing transaction with Falcon...' : 'Approve transaction in your wallet...' }))
       const signedTxns = await signer(
         psGroup,
         psGroup.map((_, i) => i),
@@ -1268,7 +1558,12 @@ export function useTransaction(): UseTransactionReturn {
 
   // ── PRIVATE SEND (combined single-proof deposit+withdraw) ──
   const privateSend = useCallback(async (microAlgos: bigint, destinationAddr: string, skipBatchWait?: boolean, subsidyMicroAlgos?: bigint) => {
-    if (!activeAddress || !transactionSigner) {
+    let effectiveSender: string
+    let effectiveSigner: (txns: algosdk.Transaction[], indices: number[]) => Promise<Uint8Array[]>
+    let isFalcon: boolean
+    try {
+      ({ sender: effectiveSender, signer: effectiveSigner, isFalcon } = await ensureSigner())
+    } catch {
       addToast('error', 'Wallet not connected')
       setState(s => ({ ...s, stage: 'error', error: 'Wallet not connected' }))
       return
@@ -1320,18 +1615,22 @@ export function useTransaction(): UseTransactionReturn {
         addToast('error', clusterWarning)
       }
 
+      // Privacy check: block if pool has too few deposits
+      await checkPoolSize(client, pool.appId, 'Private send')
+
       setState(s => ({ ...s, stage: 'depositing', message: 'Initializing cryptography...', txId: null, error: null }))
 
       await initMimc()
 
-      // Pre-check wallet balance for combined privateSend fee
+      // Pre-check balance for combined privateSend fee
       const subsidy = subsidyMicroAlgos ?? 0n
-      setState(s => ({ ...s, message: 'Checking wallet balance...' }))
-      await checkBalance(client, activeAddress, microAlgos + FEES.privateSend + PROTOCOL_FEE + subsidy)
+      const falconFee = isFalcon && !USE_PLONK_LSIG ? FALCON_EXTRA_FEE.groth16Padding : 0n
+      setState(s => ({ ...s, message: 'Checking balance...' }))
+      await checkBalance(client, effectiveSender, microAlgos + FEES.privateSend + PROTOCOL_FEE + subsidy + falconFee)
 
       setState(s => ({ ...s, message: 'Deriving deposit key...' }))
       const masterKey = await deriveMasterKey(signData)
-      const depositIdx = getNextDepositIndex()
+      const depositIdx = await claimNextDepositIndex() // atomic claim
       const note = deriveDeposit(masterKey, depositIdx, microAlgos, 0)
 
       // Wait for batch window (timing attack mitigation)
@@ -1342,7 +1641,7 @@ export function useTransaction(): UseTransactionReturn {
       let txId: string | undefined
       for (let attempt = 1; attempt <= MAX_DEPOSIT_RETRIES; attempt++) {
         try {
-          txId = await executePrivateSend(client, activeAddress, transactionSigner, pool, note, microAlgos, recipientAlgoAddr, recipientViewPubkey, subsidy)
+          txId = await executePrivateSend(client, effectiveSender, effectiveSigner, pool, note, microAlgos, recipientAlgoAddr, recipientViewPubkey, subsidy, isFalcon)
           break // success
         } catch (err) {
           clearTreeCache(pool.appId) // Always clear — in-memory tree has phantom leaf
@@ -1359,9 +1658,6 @@ export function useTransaction(): UseTransactionReturn {
         }
       }
 
-      // Increment deterministic counter (no note to persist — privateSend is atomic deposit+withdraw)
-      incrementDepositIndex()
-
       const displayAddr = recipientAlgoAddr.slice(0, 6) + '...' + recipientAlgoAddr.slice(-4)
       recordOperation('deposit') // privateSend is deposit+withdraw combined
       addToast('success', `${amountAlgo} ALGO sent privately to ${displayAddr}`)
@@ -1375,27 +1671,300 @@ export function useTransaction(): UseTransactionReturn {
         savedNotes: psNotes,
       }))
     } catch (err) {
-      if (err instanceof PasswordRequiredError) throw err
+      if (err instanceof PasswordRequiredError || (err as any)?.name === 'PasswordRequiredError') throw err
       const msg = humanizeError(err)
       console.error('Private send error:', err)
       addToast('error', msg)
       setState(s => ({ ...s, stage: 'error', error: msg }))
     }
-  }, [activeAddress, transactionSigner, signData, getClient, addToast])
+  }, [activeAddress, transactionSigner, signData, getClient, addToast, falcon])
 
   // ── CHURN (withdraw old note + deposit new one) ──
   const churnNote = useCallback(async (note: DepositNote) => {
-    if (!activeAddress || !transactionSigner) {
+    if (!activeAddress) {
       addToast('error', 'Wallet not connected')
       return
     }
     // Must use withdraw+deposit to actually consume the old note's nullifier.
     // privateSend derives a fresh note and doesn't spend the specified one.
     // Self-churn is inherently linkable (same address), but the old note IS consumed.
-    await withdraw(note.commitment, activeAddress)
+    // Withdraw to the effective sender (Falcon address if active, wallet address otherwise)
+    const churnDest = (falcon.enabled && falcon.funded && falcon.account)
+      ? falcon.account.address
+      : activeAddress
+    await withdraw(note.commitment, churnDest)
     await deposit(note.denomination)
     addToast('success', 'Note churned — old nullifier spent, new note created')
-  }, [activeAddress, transactionSigner, withdraw, deposit, addToast])
+  }, [activeAddress, withdraw, deposit, addToast, falcon])
+
+  // ── SPLIT (1.0 ALGO → 2×0.5 ALGO) ──
+  const split = useCallback(async (noteCommitment: bigint) => {
+    let effectiveSender: string
+    let effectiveSigner: (txns: algosdk.Transaction[], indices: number[]) => Promise<Uint8Array[]>
+    let isFalcon: boolean
+    try {
+      ({ sender: effectiveSender, signer: effectiveSigner, isFalcon } = await ensureSigner())
+    } catch {
+      addToast('error', 'Wallet not connected')
+      setState(s => ({ ...s, stage: 'error', error: 'Wallet not connected' }))
+      return
+    }
+
+    const notes = await loadNotes()
+    const note = notes.find(n => n.commitment === noteCommitment)
+    if (!note) {
+      addToast('error', 'Note not found')
+      setState(s => ({ ...s, stage: 'error', error: 'Note not found' }))
+      return
+    }
+
+    // Only 1.0 → 2×0.5 is supported (0.5/2 = 0.25 is not a valid tier)
+    const destDenom = note.denomination / 2n
+    if (!isValidTier(destDenom)) {
+      addToast('error', `Cannot split ${Number(note.denomination) / 1_000_000} ALGO notes`)
+      setState(s => ({ ...s, stage: 'error', error: 'No valid destination denomination for this split' }))
+      return
+    }
+
+    const client = getClient()
+    const sourcePool = getPoolForTier(note.denomination)
+    const destPool = getPoolForTier(destDenom)
+
+    try {
+      const cooldown = checkCooldown()
+      if (!cooldown.ok) {
+        addToast('error', `Please wait ${cooldown.remainingSec}s between operations`)
+        setState(s => ({ ...s, stage: 'error', error: `Cooldown: wait ${cooldown.remainingSec}s` }))
+        return
+      }
+
+      // Privacy check: block if source pool has too few deposits
+      await checkPoolSize(client, sourcePool.appId, 'Split')
+
+      setState(s => ({ ...s, stage: 'withdrawing', message: 'Split step 1/3: Withdrawing from source pool...', txId: null, error: null }))
+      await initMimc()
+
+      // Checkpoint: track multi-step progress so we can recover from partial failure
+      const checkpoint = {
+        op: 'split' as const,
+        sourceCommitment: note.commitment.toString(),
+        sourceDenom: note.denomination.toString(),
+        destDenom: destDenom.toString(),
+        step: 0,
+      }
+      localStorage.setItem('privacy_pool_pending_op', JSON.stringify(checkpoint))
+
+      // Step 1: Withdraw from source pool to self
+      await executeWithdraw(client, effectiveSender, effectiveSigner, sourcePool, note, effectiveSender, isFalcon)
+      await removeNoteByCommitment(note.commitment)
+      checkpoint.step = 1
+      localStorage.setItem('privacy_pool_pending_op', JSON.stringify(checkpoint))
+
+      // Step 2: First deposit into destination pool (with retry on concurrent deposit)
+      setState(s => ({ ...s, stage: 'depositing', message: 'Split step 2/3: First deposit...' }))
+      const masterKey = await deriveMasterKey(signData)
+      const depositIdx1 = await claimNextDepositIndex() // atomic claim
+      const note1 = deriveDeposit(masterKey, depositIdx1, destDenom, 0)
+
+      for (let attempt = 1; attempt <= MAX_DEPOSIT_RETRIES; attempt++) {
+        try {
+          await executeDeposit(client, effectiveSender, effectiveSigner, destPool, note1, destDenom, 0n, isFalcon)
+          break
+        } catch (err) {
+          clearTreeCache(destPool.appId)
+          if (attempt < MAX_DEPOSIT_RETRIES && isStaleRootError(err)) {
+            setState(s => ({ ...s, message: `Split step 2/3: Retrying deposit... (${attempt}/${MAX_DEPOSIT_RETRIES})` }))
+            continue
+          }
+          throw err
+        }
+      }
+      await saveNote(note1)
+      checkpoint.step = 2
+      localStorage.setItem('privacy_pool_pending_op', JSON.stringify(checkpoint))
+
+      // Step 3: Second deposit into destination pool (with retry)
+      setState(s => ({ ...s, stage: 'depositing', message: 'Split step 3/3: Second deposit...' }))
+      const depositIdx2 = await claimNextDepositIndex() // atomic claim
+      const note2 = deriveDeposit(masterKey, depositIdx2, destDenom, 0)
+
+      let lastTxId: string | undefined
+      clearTreeCache(destPool.appId)
+      for (let attempt = 1; attempt <= MAX_DEPOSIT_RETRIES; attempt++) {
+        try {
+          lastTxId = await executeDeposit(client, effectiveSender, effectiveSigner, destPool, note2, destDenom, 0n, isFalcon)
+          break
+        } catch (err) {
+          clearTreeCache(destPool.appId)
+          if (attempt < MAX_DEPOSIT_RETRIES && isStaleRootError(err)) {
+            setState(s => ({ ...s, message: `Split step 3/3: Retrying deposit... (${attempt}/${MAX_DEPOSIT_RETRIES})` }))
+            continue
+          }
+          throw err
+        }
+      }
+      await saveNote(note2)
+
+      // All steps complete — clear checkpoint
+      localStorage.removeItem('privacy_pool_pending_op')
+
+      recordOperation('withdraw')
+      const srcAlgo = (Number(note.denomination) / 1_000_000).toFixed(1)
+      const dstAlgo = (Number(destDenom) / 1_000_000).toFixed(1)
+      addToast('success', `Split complete: ${srcAlgo} ALGO → 2×${dstAlgo} ALGO`)
+      const updatedNotes = await loadNotes()
+      setState(s => ({
+        ...s,
+        stage: 'withdraw_complete',
+        message: `Split complete! ${srcAlgo} ALGO → 2×${dstAlgo} ALGO`,
+        txId: lastTxId!,
+        error: null,
+        savedNotes: updatedNotes,
+      }))
+    } catch (err) {
+      if (err instanceof PasswordRequiredError || (err as any)?.name === 'PasswordRequiredError') throw err
+      // Clear tree caches on failure — but keep checkpoint so user can see what happened
+      clearTreeCache(sourcePool.appId)
+      clearTreeCache(destPool.appId)
+      const pending = localStorage.getItem('privacy_pool_pending_op')
+      const step = pending ? JSON.parse(pending).step : 0
+      const msg = humanizeError(err)
+      const recovery = step > 0
+        ? `\n\nSplit failed at step ${step + 1}/3. Your ${(Number(note.denomination) / 1_000_000).toFixed(1)} ALGO was withdrawn to your wallet. Re-deposit manually or retry.`
+        : ''
+      console.error('Split error:', err)
+      addToast('error', msg)
+      setState(s => ({ ...s, stage: 'error', error: msg + recovery }))
+      if (step >= 3) localStorage.removeItem('privacy_pool_pending_op')
+    }
+  }, [activeAddress, transactionSigner, signData, getClient, addToast, falcon])
+
+  // ── COMBINE (2×0.5 ALGO → 1.0 ALGO) ──
+  const combine = useCallback(async (noteCommitment1: bigint, noteCommitment2: bigint) => {
+    let effectiveSender: string
+    let effectiveSigner: (txns: algosdk.Transaction[], indices: number[]) => Promise<Uint8Array[]>
+    let isFalcon: boolean
+    try {
+      ({ sender: effectiveSender, signer: effectiveSigner, isFalcon } = await ensureSigner())
+    } catch {
+      addToast('error', 'Wallet not connected')
+      setState(s => ({ ...s, stage: 'error', error: 'Wallet not connected' }))
+      return
+    }
+
+    const notes = await loadNotes()
+    const note1 = notes.find(n => n.commitment === noteCommitment1)
+    const note2 = notes.find(n => n.commitment === noteCommitment2)
+    if (!note1 || !note2) {
+      addToast('error', 'One or both notes not found')
+      setState(s => ({ ...s, stage: 'error', error: 'Notes not found' }))
+      return
+    }
+
+    if (note1.denomination !== note2.denomination) {
+      addToast('error', 'Both notes must be the same denomination')
+      setState(s => ({ ...s, stage: 'error', error: 'Denomination mismatch' }))
+      return
+    }
+
+    // Only 2×0.5 → 1.0 is supported (2×0.1 = 0.2 is not a valid tier)
+    const destDenom = note1.denomination * 2n
+    if (!isValidTier(destDenom)) {
+      addToast('error', `Cannot combine ${Number(note1.denomination) / 1_000_000} ALGO notes`)
+      setState(s => ({ ...s, stage: 'error', error: 'No valid destination denomination for this combine' }))
+      return
+    }
+
+    const client = getClient()
+    const sourcePool = getPoolForTier(note1.denomination)
+    const destPool = getPoolForTier(destDenom)
+
+    // Checkpoint for recovery if combine fails mid-way
+    const checkpoint = { op: 'combine', step: 0, srcDenom: note1.denomination.toString(), destDenom: destDenom.toString() }
+
+    try {
+      const cooldown = checkCooldown()
+      if (!cooldown.ok) {
+        addToast('error', `Please wait ${cooldown.remainingSec}s between operations`)
+        setState(s => ({ ...s, stage: 'error', error: `Cooldown: wait ${cooldown.remainingSec}s` }))
+        return
+      }
+
+      // Privacy check: block if source pool has too few deposits
+      await checkPoolSize(client, sourcePool.appId, 'Combine')
+
+      setState(s => ({ ...s, stage: 'withdrawing', message: 'Combine step 1/3: Withdrawing note 1...', txId: null, error: null }))
+      await initMimc()
+      localStorage.setItem('privacy_pool_pending_op', JSON.stringify(checkpoint))
+
+      // Step 1: Withdraw first note from source pool to self
+      await executeWithdraw(client, effectiveSender, effectiveSigner, sourcePool, note1, effectiveSender, isFalcon)
+      await removeNoteByCommitment(note1.commitment)
+      checkpoint.step = 1
+      localStorage.setItem('privacy_pool_pending_op', JSON.stringify(checkpoint))
+
+      // Step 2: Withdraw second note from source pool to self
+      setState(s => ({ ...s, stage: 'withdrawing', message: 'Combine step 2/3: Withdrawing note 2...' }))
+      await executeWithdraw(client, effectiveSender, effectiveSigner, sourcePool, note2, effectiveSender, isFalcon)
+      await removeNoteByCommitment(note2.commitment)
+      checkpoint.step = 2
+      localStorage.setItem('privacy_pool_pending_op', JSON.stringify(checkpoint))
+
+      // Step 3: Deposit combined amount into destination pool (with retry)
+      setState(s => ({ ...s, stage: 'depositing', message: 'Combine step 3/3: Depositing combined amount...' }))
+      const masterKey = await deriveMasterKey(signData)
+      const depositIdx = await claimNextDepositIndex() // atomic claim
+      const newNote = deriveDeposit(masterKey, depositIdx, destDenom, 0)
+
+      let txId: string | undefined
+      for (let attempt = 1; attempt <= MAX_DEPOSIT_RETRIES; attempt++) {
+        try {
+          txId = await executeDeposit(client, effectiveSender, effectiveSigner, destPool, newNote, destDenom, 0n, isFalcon)
+          break
+        } catch (err) {
+          clearTreeCache(destPool.appId)
+          if (attempt < MAX_DEPOSIT_RETRIES && isStaleRootError(err)) {
+            setState(s => ({ ...s, message: `Combine step 3/3: Retrying deposit... (${attempt}/${MAX_DEPOSIT_RETRIES})` }))
+            continue
+          }
+          throw err
+        }
+      }
+      await saveNote(newNote)
+
+      // All steps complete — clear checkpoint
+      localStorage.removeItem('privacy_pool_pending_op')
+
+      recordOperation('deposit')
+      const srcAlgo = (Number(note1.denomination) / 1_000_000).toFixed(1)
+      const dstAlgo = (Number(destDenom) / 1_000_000).toFixed(1)
+      addToast('success', `Combine complete: 2×${srcAlgo} ALGO → ${dstAlgo} ALGO`)
+      const updatedNotes = await loadNotes()
+      setState(s => ({
+        ...s,
+        stage: 'withdraw_complete',
+        message: `Combine complete! 2×${srcAlgo} ALGO → ${dstAlgo} ALGO`,
+        txId: txId!,
+        error: null,
+        savedNotes: updatedNotes,
+      }))
+    } catch (err) {
+      if (err instanceof PasswordRequiredError || (err as any)?.name === 'PasswordRequiredError') throw err
+      clearTreeCache(sourcePool.appId)
+      clearTreeCache(destPool.appId)
+      const pending = localStorage.getItem('privacy_pool_pending_op')
+      const step = pending ? JSON.parse(pending).step : 0
+      const msg = humanizeError(err)
+      const srcAlgoErr = (Number(note1.denomination) / 1_000_000).toFixed(1)
+      const recovery = step > 0
+        ? `\n\nCombine failed at step ${step + 1}/3. ${step === 1 ? `1×${srcAlgoErr}` : `2×${srcAlgoErr}`} ALGO was withdrawn to your wallet. Re-deposit manually or retry.`
+        : ''
+      console.error('Combine error:', err)
+      addToast('error', msg)
+      setState(s => ({ ...s, stage: 'error', error: msg + recovery }))
+      if (step >= 3) localStorage.removeItem('privacy_pool_pending_op')
+    }
+  }, [activeAddress, transactionSigner, signData, getClient, addToast, falcon])
 
   /** Cancel the current batch window wait */
   const skipBatchWaitFn = useCallback(() => {
@@ -1466,6 +2035,8 @@ export function useTransaction(): UseTransactionReturn {
     withdraw,
     privateSend,
     churnNote,
+    split,
+    combine,
     skipBatchWait: skipBatchWaitFn,
     reset,
     refreshNotes,

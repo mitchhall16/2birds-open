@@ -12,17 +12,18 @@ graph TB
         HPKE[hpke.ts — Encrypted on-chain notes]
         SCAN[scanner.ts — Chain note recovery]
         AC[Anti-Correlation<br/>Soak · Cooldown · Jitter]
+        FALCON[Falcon PQ Mode<br/>Optional quantum-safe signing]
     end
 
     subgraph "ZK Circuits — Circom + snarkjs"
         DC[Deposit ~42K constraints]
-        WC[Withdraw ~23K constraints]
-        PSC[PrivateSend ~44K constraints]
+        WC[Withdraw ~23K constraints<br/>+ relayer/fee binding]
+        PSC[PrivateSend ~44K constraints<br/>+ relayer/fee binding]
         SC[Split ~66K constraints]
         CC[Combine ~66K constraints]
     end
 
-    subgraph "Algorand AVM — Testnet"
+    subgraph "Algorand AVM v12 — Testnet"
         PLONK["PLONK LogicSig Verifiers<br/>4 txns per proof, 0.004 ALGO"]
         PP1["Pool 0.1 ALGO<br/>App 756478534"]
         PP5["Pool 0.5 ALGO<br/>App 756478549"]
@@ -30,14 +31,15 @@ graph TB
     end
 
     subgraph "Infrastructure"
-        REL1[Relayer 1<br/>CF Worker]
-        REL2[Relayer 2<br/>CF Worker]
+        REL1[Relayer 1<br/>CF Worker + KV]
+        REL2[Relayer 2<br/>CF Worker + KV]
         R2[Cloudflare R2<br/>PLONK zkeys]
         IPFS[IPFS Fallback<br/>zkey mirror]
     end
 
     UI --> HOOKS
     HOOKS --> PRIV & TREE & HPKE & AC
+    HOOKS -.->|optional| FALCON
     HOOKS -->|snarkjs| DC & WC & PSC & SC & CC
     HOOKS -->|LogicSig group| PLONK
     HOOKS -->|app call| PP1 & PP5 & PP10
@@ -49,6 +51,7 @@ graph TB
 
     style PLONK fill:#4CAF50,color:#fff
     style AC fill:#e91e63,color:#fff
+    style FALCON fill:#9C27B0,color:#fff
 ```
 
 ## Deposit Flow
@@ -70,9 +73,11 @@ sequenceDiagram
     snarkjs-->>Frontend: PLONK proof
     Frontend->>PLONK LogicSig: 4 LogicSig txns (0.004 ALGO)
     Frontend->>Pool Contract: Atomic group: [4× LogicSig, payment, deposit]
+    Pool Contract->>Pool Contract: Enforce denomination matches pool tier
     Pool Contract->>Pool Contract: Verify PLONK verifier ran in same group
+    Pool Contract->>Pool Contract: verifyProofWithSignals — bind proof to params
     Pool Contract->>Pool Contract: Store commitment in box storage
-    Pool Contract->>Pool Contract: Update root + root history
+    Pool Contract->>Pool Contract: Update root + knownRoots history
     Frontend->>Frontend: Encrypt note via HPKE, attach to txn note field
     Pool Contract-->>User: Deposit confirmed
 ```
@@ -96,13 +101,15 @@ sequenceDiagram
     snarkjs-->>Frontend: PLONK proof + public signals
     Frontend->>Frontend: Random jitter delay (5-30s)
     Frontend->>Relayer (random): POST /withdraw {proof, signals, recipient}
-    Note right of Relayer (random): Relayer chosen randomly<br/>from pool of operators.<br/>IP hashed, never stored raw.
-    Relayer (random)->>Relayer (random): Verify pool has ≥3 deposits
+    Note right of Relayer (random): Relayer chosen randomly.<br/>KV replay protection.<br/>IP hashed, never stored raw.
+    Relayer (random)->>Relayer (random): KV claim payment txn ID (replay protection)
+    Relayer (random)->>Relayer (random): Validate fee is integer, within bounds
     Relayer (random)->>PLONK LogicSig: 4 LogicSig txns
     Relayer (random)->>Pool Contract: Atomic group: [4× LogicSig, withdraw]
-    Pool Contract->>Pool Contract: Verify root is known
-    Pool Contract->>Pool Contract: Check nullifier not spent
-    Pool Contract->>Pool Contract: Record nullifier, send ALGO to recipient
+    Pool Contract->>Pool Contract: verifyProofWithSignals — bind relayer + fee
+    Pool Contract->>Pool Contract: Verify root in knownRoots
+    Pool Contract->>Pool Contract: Check nullifier not spent, record it
+    Pool Contract->>Pool Contract: Send ALGO to recipient
     Pool Contract-->>Relayer (random): Withdrawal confirmed
     Relayer (random)-->>Frontend: txId
 ```
@@ -124,6 +131,7 @@ sequenceDiagram
     snarkjs-->>Frontend: PLONK proof (9 public signals)
     Frontend->>PLONK LogicSig: 4 LogicSig txns
     Frontend->>Pool Contract: Atomic group: [4× LogicSig, payment, privateSend]
+    Pool Contract->>Pool Contract: verifyProofWithSignals — bind relayer + fee
     Pool Contract->>Pool Contract: Insert new commitment + mark nullifier spent
     Pool Contract->>User: Send denomination to destination
 ```
@@ -141,10 +149,11 @@ graph TD
     end
 
     subgraph "Pool App Call (same atomic group)"
-        G[Check nullifier not in box storage] --> H[Check root in knownRoots]
-        H --> I[Check PLONK verifier addr matches locked config]
-        I --> J[Transfer denomination to recipient]
-        J --> K[Record nullifier as spent]
+        G[verifyProofWithSignals — bind all params] --> H[Check root in knownRoots]
+        H --> I[Check nullifier not spent + no duplicates]
+        I --> J[Enforce denomination tier]
+        J --> K[Transfer denomination to recipient]
+        K --> L[Record nullifier as spent]
     end
 
     PASS -.->|atomic group| G
@@ -155,7 +164,7 @@ graph TD
 
 **Why PLONK LogicSig?** Groth16 verification required ~200 inner app calls for opcode budget (~0.2 ALGO). PLONK verification runs inside a LogicSig program — 4 txns at 0.001 ALGO each = 0.004 ALGO. Same cryptographic security, 30x cheaper.
 
-## Merkle Tree (Incremental, Depth 16)
+## Merkle Tree (Incremental, Depth 20)
 
 ```mermaid
 graph TB
@@ -179,7 +188,7 @@ graph TB
     style ROOT fill:#2196F3,color:#fff
 ```
 
-Each leaf is `MiMC(secret, nullifier, amount)`. Siblings are hashed up with MiMC Sponge (220 rounds, x^5 Feistel). Tree supports ~65K deposits (2^16 leaves).
+Each leaf is `MiMC(amount, ownerPubKey, blinding, nullifier)`. Siblings are hashed up with MiMC Sponge (220 rounds, x^5 Feistel). Tree supports ~1M deposits (2^20 leaves). Zero hashes initialized on-chain via `initZeroHashes()`.
 
 ## Split/Combine Flow
 
