@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/pool — Deposit into privacy pool
+ * @2birds/pool — Deposit into privacy pool
  *
  * Creates a commitment from a random (secret, nullifier) pair,
  * submits it to the pool contract with the deposit payment.
@@ -18,7 +18,7 @@ import {
   scalarToBytes,
   createAlgodClient,
   serializeNote,
-} from '@algo-privacy/core';
+} from '@2birds/core';
 
 /**
  * Create a new deposit commitment.

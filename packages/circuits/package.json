@@ -1,5 +1,5 @@
 {
-  "name": "@algo-privacy/circuits",
+  "name": "@2birds/circuits",
   "version": "0.1.0",
   "description": "Compiled Circom circuits, proving keys, and WASM witness generators for Algorand privacy SDK",
   "main": "dist/index.js",
@@ -11,7 +11,7 @@
     "postbuild:circuits": "node scripts/copy-artifacts.js"
   },
   "dependencies": {
-    "@algo-privacy/core": "*"
+    "@2birds/core": "*"
   },
   "files": [
     "dist",

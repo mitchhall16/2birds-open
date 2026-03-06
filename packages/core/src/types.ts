@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/core — Shared types for the Algorand Privacy SDK
+ * @2birds/core — Shared types for the Algorand Privacy SDK
  */
 
 /** A point on the BN254 curve (affine coordinates) */

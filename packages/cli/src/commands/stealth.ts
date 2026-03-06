@@ -4,7 +4,7 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { generateStealthKeys, encodeMetaAddress, decodeMetaAddress } from '@algo-privacy/stealth';
+import { generateStealthKeys, encodeMetaAddress, decodeMetaAddress } from '@2birds/stealth';
 import { loadConfig, loadAccount } from '../utils.js';
 
 export function stealthCommands(): Command {
@@ -43,7 +43,7 @@ export function stealthCommands(): Command {
       try {
         const config = loadConfig();
         const account = await loadAccount();
-        const { StealthRegistry } = await import('@algo-privacy/stealth');
+        const { StealthRegistry } = await import('@2birds/stealth');
 
         const registry = new StealthRegistry({
           appId: BigInt(config.stealthRegistryAppId),
@@ -70,7 +70,7 @@ export function stealthCommands(): Command {
       try {
         const config = loadConfig();
         const account = await loadAccount();
-        const { StealthRegistry } = await import('@algo-privacy/stealth');
+        const { StealthRegistry } = await import('@2birds/stealth');
 
         const registry = new StealthRegistry({
           appId: BigInt(config.stealthRegistryAppId),
@@ -117,7 +117,7 @@ export function stealthCommands(): Command {
 
       try {
         const config = loadConfig();
-        const { StealthScanner } = await import('@algo-privacy/stealth');
+        const { StealthScanner } = await import('@2birds/stealth');
 
         const scanner = new StealthScanner({
           registry: {

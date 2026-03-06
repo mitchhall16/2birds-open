@@ -4,8 +4,8 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { createDeposit, submitDeposit, encodeDepositNote } from '@algo-privacy/pool';
-import { deserializeNote } from '@algo-privacy/core';
+import { createDeposit, submitDeposit, encodeDepositNote } from '@2birds/pool';
+import { deserializeNote } from '@2birds/core';
 import { loadConfig, loadAccount } from '../utils.js';
 
 export function poolCommands(): Command {
@@ -79,12 +79,12 @@ export function poolCommands(): Command {
         const note = deserializeNote(noteJson);
 
         console.log(chalk.blue('Building Merkle tree state...'));
-        const { IncrementalMerkleTree } = await import('@algo-privacy/pool');
+        const { IncrementalMerkleTree } = await import('@2birds/pool');
         const tree = new IncrementalMerkleTree(20);
         // In production, tree would be synced from on-chain state
 
         console.log(chalk.blue('Generating ZK proof (this may take 10-30 seconds)...'));
-        const { generateWithdrawProof, submitWithdrawal } = await import('@algo-privacy/pool');
+        const { generateWithdrawProof, submitWithdrawal } = await import('@2birds/pool');
 
         const relayerAddr = opts.relayer
           ? 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY5HFKQ' // placeholder
@@ -102,7 +102,7 @@ export function poolCommands(): Command {
 
         if (opts.relayer) {
           console.log(chalk.blue('Submitting via relayer for IP privacy...'));
-          const { RelayerClient } = await import('@algo-privacy/pool');
+          const { RelayerClient } = await import('@2birds/pool');
           const relayer = new RelayerClient({
             url: opts.relayer,
             feePercent: 0,

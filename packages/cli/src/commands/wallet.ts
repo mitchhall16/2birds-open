@@ -18,7 +18,7 @@ export function walletCommands(): Command {
     .option('-o, --output <file>', 'Output file for wallet state')
     .action(async (opts: { output?: string }) => {
       try {
-        const { ShieldedWallet } = await import('@algo-privacy/shielded');
+        const { ShieldedWallet } = await import('@2birds/shielded');
         const wallet = new ShieldedWallet();
 
         const outPath = opts.output || getWalletPath();
@@ -54,7 +54,7 @@ export function walletCommands(): Command {
           return;
         }
 
-        const { ShieldedWallet } = await import('@algo-privacy/shielded');
+        const { ShieldedWallet } = await import('@2birds/shielded');
         const walletData = fs.readFileSync(walletPath, 'utf-8');
         const w = ShieldedWallet.deserialize(walletData);
         const assetId = parseInt(opts.asset);
@@ -92,7 +92,7 @@ export function walletCommands(): Command {
         const account = await loadAccount();
         const walletPath = opts.wallet || getWalletPath();
 
-        const { ShieldedWallet } = await import('@algo-privacy/shielded');
+        const { ShieldedWallet } = await import('@2birds/shielded');
         const walletData = fs.readFileSync(walletPath, 'utf-8');
         const w = ShieldedWallet.deserialize(walletData);
 
@@ -136,7 +136,7 @@ export function walletCommands(): Command {
         const account = await loadAccount();
         const walletPath = opts.wallet || getWalletPath();
 
-        const { ShieldedWallet } = await import('@algo-privacy/shielded');
+        const { ShieldedWallet } = await import('@2birds/shielded');
         const walletData = fs.readFileSync(walletPath, 'utf-8');
         const w = ShieldedWallet.deserialize(walletData);
 
@@ -197,7 +197,7 @@ export function walletCommands(): Command {
 
       // Validate it's a valid wallet
       try {
-        const { ShieldedWallet } = await import('@algo-privacy/shielded');
+        const { ShieldedWallet } = await import('@2birds/shielded');
         ShieldedWallet.deserialize(data);
       } catch {
         console.log(chalk.red('Invalid wallet file.'));

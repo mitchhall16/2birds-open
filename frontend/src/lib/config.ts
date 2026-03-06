@@ -62,6 +62,8 @@ export const DENOMINATION_TIERS = [
   { label: '0.1', microAlgos: 100_000n },
   { label: '0.5', microAlgos: 500_000n },
   { label: '1.0', microAlgos: 1_000_000n },
+  { label: '5.0', microAlgos: 5_000_000n },
+  { label: '10.0', microAlgos: 10_000_000n },
 ] as const
 
 export type DenominationTier = (typeof DENOMINATION_TIERS)[number]
@@ -79,6 +81,14 @@ export const POOL_CONTRACTS: Record<string, { appId: number; appAddress: string 
   '100000': { appId: 756478534, appAddress: 'KKBAABJWKQADOM6HG4JPDQDQMCD5JSMJR2HCNDQGQRW4KL5UDVVUWGMU5E' },
   '500000': { appId: 756478549, appAddress: 'E5TRMAZSX6FCSFVZU6OLS372YB56GAW662CHX2NAD6C7VATSYYVXECKDG4' },
   '1000000': { appId: 756480627, appAddress: '624W56BLCEIXUMOYCDYACW3QOJEKQTCC6YXY4Q7Z3Z4WQUOBERZTUEHP7I' },
+  '5000000': { appId: 0, appAddress: '' },   // deploy needed
+  '10000000': { appId: 0, appAddress: '' },  // deploy needed
+}
+
+/** Check if a tier's pool contract is deployed */
+export function isTierDeployed(microAlgos: bigint): boolean {
+  const pool = POOL_CONTRACTS[microAlgos.toString()]
+  return !!pool && pool.appId !== 0
 }
 
 /** Get pool config for a specific tier (microAlgos) */
@@ -88,7 +98,11 @@ export function getPoolForTier(microAlgos: bigint): { appId: number; appAddress:
   return pool
 }
 
-// Relayer configuration — multiple relayers for privacy (no single operator sees all withdrawals)
+// LogicSig relayer (trustless, no server needed)
+export const LSIG_RELAYER_ENABLED = true
+export const LSIG_RELAYER_FEE = 200_000n  // 0.2 ALGO (covers verifier gas + margin)
+
+// Worker relayer configuration — multiple relayers for privacy (no single operator sees all withdrawals)
 // Frontend randomly picks one per operation. Add more as operators join.
 export const RELAYERS = [
   {

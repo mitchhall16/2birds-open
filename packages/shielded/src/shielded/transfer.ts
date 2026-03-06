@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/shielded — Shielded Transfer
+ * @2birds/shielded — Shielded Transfer
  *
  * Full privacy transfers: sender privacy + receiver privacy + hidden amounts.
  * Uses the UTXO model — consume old notes, create new notes, prove validity with ZK.
@@ -14,8 +14,8 @@ import {
   type NetworkConfig,
   scalarToBytes,
   createAlgodClient,
-} from '@algo-privacy/core';
-import { IncrementalMerkleTree } from '@algo-privacy/pool';
+} from '@2birds/core';
+import { IncrementalMerkleTree } from '@2birds/pool';
 import { computeNoteCommitment, computeNullifierHash, createTransferOutputs } from './note.js';
 
 let snarkjs: any;

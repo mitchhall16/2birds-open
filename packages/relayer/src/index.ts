@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @algo-privacy/relayer — Relayer Node
+ * @2birds/relayer — Relayer Node
  *
  * HTTP server that accepts withdrawal requests, verifies ZK proofs,
  * and submits transactions on behalf of users to preserve their IP privacy.

@@ -1,5 +1,5 @@
 {
-  "name": "@algo-privacy/stealth",
+  "name": "@2birds/stealth",
   "version": "0.1.0",
   "description": "Stealth address protocol for Algorand",
   "main": "dist/index.js",
@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@algo-privacy/core": "*",
+    "@2birds/core": "*",
     "algosdk": "^3.0.0",
     "tweetnacl": "^1.0.3"
   }

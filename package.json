@@ -1,5 +1,5 @@
 {
-  "name": "algo-privacy",
+  "name": "2birds",
   "private": true,
   "workspaces": [
     "packages/*",

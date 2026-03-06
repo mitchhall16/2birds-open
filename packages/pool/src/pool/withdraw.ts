@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/pool — Withdraw from privacy pool
+ * @2birds/pool — Withdraw from privacy pool
  *
  * Generates a ZK proof (Groth16 via snarkjs) proving Merkle membership
  * without revealing which deposit, then submits withdrawal.
@@ -19,7 +19,7 @@ import {
   addressToScalar,
   scalarToBytes,
   createAlgodClient,
-} from '@algo-privacy/core';
+} from '@2birds/core';
 import { IncrementalMerkleTree } from './merkle.js';
 
 // snarkjs is loaded dynamically for browser compatibility

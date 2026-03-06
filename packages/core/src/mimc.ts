@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/core — MiMC Sponge hash function
+ * @2birds/core — MiMC Sponge hash function
  *
  * Uses circomlibjs to ensure exact compatibility with circomlib's MiMCSponge circuit.
  * MiMCSponge: Feistel construction, x^5 S-box, 220 rounds, keccak256-derived constants.

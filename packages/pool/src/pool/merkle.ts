@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/pool — Incremental Merkle Tree
+ * @2birds/pool — Incremental Merkle Tree
  *
  * Off-chain mirror of the on-chain incremental Merkle tree.
  * Used to compute Merkle paths for withdrawal proofs.
@@ -11,7 +11,7 @@
  * Hash function: MiMC sponge (matches on-chain MiMC BN254_MP_110)
  */
 
-import { mimcHash, initMimc, type Scalar, type MerklePath } from '@algo-privacy/core';
+import { mimcHash, initMimc, type Scalar, type MerklePath } from '@2birds/core';
 
 /** Pre-computed zero hashes for each level of the Merkle tree */
 function computeZeroHashes(depth: number): Scalar[] {

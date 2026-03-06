@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/confidential — Pedersen Commitments on BN254
+ * @2birds/confidential — Pedersen Commitments on BN254
  *
  * Pedersen commitment: C = amount * G + blinding * H
  *
@@ -28,7 +28,7 @@ import {
   BN254_SCALAR_ORDER,
   isOnCurve,
   encodePoint,
-} from '@algo-privacy/core';
+} from '@2birds/core';
 
 /**
  * Create a Pedersen commitment: C = amount * G + blinding * H

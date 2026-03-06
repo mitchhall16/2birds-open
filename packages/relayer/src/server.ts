@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/relayer — HTTP Server
+ * @2birds/relayer — HTTP Server
  */
 
 import express, { type Request, type Response } from 'express';
@@ -10,8 +10,8 @@ import {
   type PoolConfig,
   createAlgodClient,
   scalarToBytes,
-} from '@algo-privacy/core';
-import { submitWithdrawal, verifyWithdrawProof } from '@algo-privacy/pool';
+} from '@2birds/core';
+import { submitWithdrawal, verifyWithdrawProof } from '@2birds/pool';
 
 export interface RelayerServerConfig {
   network: NetworkConfig;

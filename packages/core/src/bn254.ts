@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/core — BN254 curve operations
+ * @2birds/core — BN254 curve operations
  *
  * BN254 (alt_bn128) curve used by Ethereum ZK precompiles and Algorand AVM v10+.
  * Field prime p = 21888242871839275222246405745257275088696311157297823662689037894645226208583

@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/shielded — Shielded Note Management
+ * @2birds/shielded — Shielded Note Management
  *
  * UTXO-style notes for the shielded pool.
  * Each note represents a discrete amount of value with hidden ownership.
@@ -20,7 +20,7 @@ import {
   derivePubKey,
   scalarMod,
   BN254_SCALAR_ORDER,
-} from '@algo-privacy/core';
+} from '@2birds/core';
 
 /**
  * Create a new shielded note.

@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/stealth — Stealth Address Registry
+ * @2birds/stealth — Stealth Address Registry
  *
  * Manages the on-chain announcement registry where senders publish
  * ephemeral public keys for recipients to scan.
@@ -20,7 +20,7 @@ import {
   bigintToBytes32,
   bytes32ToBigint,
   createAlgodClient,
-} from '@algo-privacy/core';
+} from '@2birds/core';
 import { generateStealthAddress, stealthPubKeyToAddress } from './keys.js';
 
 /** Registry contract application ID (set after deployment) */

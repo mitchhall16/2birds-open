@@ -18,7 +18,7 @@ import {
   isOnCurve,
   scalarMod,
   BN254_SCALAR_ORDER,
-} from '@algo-privacy/core';
+} from '@2birds/core';
 
 // -------------------------------------------------------------------------
 // commit

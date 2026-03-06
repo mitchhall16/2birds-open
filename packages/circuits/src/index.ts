@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/circuits — Circuit artifact paths and metadata
+ * @2birds/circuits — Circuit artifact paths and metadata
  *
  * Provides paths to compiled circuit artifacts (WASM, zKey, vKey)
  * and metadata about each circuit (constraint count, public inputs, etc.).

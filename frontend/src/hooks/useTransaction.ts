@@ -66,6 +66,12 @@ export type TxStage =
   | 'withdraw_complete'
   | 'error'
 
+export interface SoakWarning {
+  depositsSince: number
+  needed: number
+  resolve: (proceed: boolean) => void
+}
+
 interface TxState {
   stage: TxStage
   message: string
@@ -77,6 +83,7 @@ interface TxState {
   poolNextIndices: Map<number, number>
   treasuryBalance: bigint | null
   subsidyActive: boolean
+  soakWarning: SoakWarning | null
 }
 
 interface UseTransactionReturn extends TxState {
@@ -248,6 +255,7 @@ export function useTransaction(): UseTransactionReturn {
     poolNextIndices: new Map(),
     treasuryBalance: null,
     subsidyActive: false,
+    soakWarning: null,
   })
 
   // Track active wallet for per-wallet deposit counter; clear keys on disconnect
@@ -1101,14 +1109,19 @@ export function useTransaction(): UseTransactionReturn {
       // Privacy check: block if pool has too few deposits
       await checkPoolSize(client, pool.appId, 'Withdrawal')
 
-      // Anti-correlation: soak time — ensure enough deposits have occurred since this note
+      // Anti-correlation: soak time — warn if too few deposits since this note
       const contractState = await readContractState(client, pool.appId)
       const depositsSinceNote = contractState.nextIndex - note.leafIndex
       if (depositsSinceNote < MIN_SOAK_DEPOSITS) {
         const needed = MIN_SOAK_DEPOSITS - depositsSinceNote
-        addToast('error', `Withdrawing too soon — only ${depositsSinceNote} deposit(s) since yours. Wait for ${needed} more deposit(s) to grow your anonymity set.`)
-        setState(s => ({ ...s, stage: 'error', error: `Need ${needed} more deposit(s) in this pool before withdrawing` }))
-        return
+        const proceed = await new Promise<boolean>(resolve => {
+          setState(s => ({ ...s, soakWarning: { depositsSince: depositsSinceNote, needed, resolve } }))
+        })
+        setState(s => ({ ...s, soakWarning: null }))
+        if (!proceed) {
+          setState(s => ({ ...s, stage: 'idle' }))
+          return
+        }
       }
 
       // Optional batch delay — multiple withdrawals in the same window are harder to correlate
@@ -1987,6 +2000,7 @@ export function useTransaction(): UseTransactionReturn {
       poolNextIndices: s.poolNextIndices,
       treasuryBalance: s.treasuryBalance,
       subsidyActive: s.subsidyActive,
+      soakWarning: null,
     }))
   }, [])
 

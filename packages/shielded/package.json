@@ -1,5 +1,5 @@
 {
-  "name": "@algo-privacy/shielded",
+  "name": "@2birds/shielded",
   "version": "0.1.0",
   "description": "Full shielded transfers for Algorand — private sender, receiver, and amount",
   "main": "dist/index.js",
@@ -10,10 +10,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@algo-privacy/core": "*",
-    "@algo-privacy/pool": "*",
-    "@algo-privacy/stealth": "*",
-    "@algo-privacy/confidential": "*",
+    "@2birds/core": "*",
+    "@2birds/pool": "*",
+    "@2birds/stealth": "*",
+    "@2birds/confidential": "*",
     "algosdk": "^3.0.0",
     "snarkjs": "^0.7.0"
   }

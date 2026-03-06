@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/pool — Relayer Client
+ * @2birds/pool — Relayer Client
  *
  * Submits withdrawals through a relayer node to preserve IP privacy.
  * The relayer pays transaction fees and deducts a small fee from the withdrawal.
@@ -11,7 +11,7 @@ import {
   type AlgorandAddress,
   type RelayerConfig,
   retry,
-} from '@algo-privacy/core';
+} from '@2birds/core';
 
 /** Response from the relayer after submitting a withdrawal */
 export interface RelayerResponse {

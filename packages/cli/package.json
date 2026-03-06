@@ -1,5 +1,5 @@
 {
-  "name": "@algo-privacy/cli",
+  "name": "@2birds/cli",
   "version": "0.1.0",
   "description": "CLI tool for Algorand privacy operations",
   "main": "dist/index.js",
@@ -13,11 +13,11 @@
     "dev": "tsx src/index.ts"
   },
   "dependencies": {
-    "@algo-privacy/core": "*",
-    "@algo-privacy/stealth": "*",
-    "@algo-privacy/pool": "*",
-    "@algo-privacy/confidential": "*",
-    "@algo-privacy/shielded": "*",
+    "@2birds/core": "*",
+    "@2birds/stealth": "*",
+    "@2birds/pool": "*",
+    "@2birds/confidential": "*",
+    "@2birds/shielded": "*",
     "algosdk": "^3.0.0",
     "commander": "^12.0.0",
     "chalk": "^5.3.0"

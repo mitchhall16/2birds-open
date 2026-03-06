@@ -1100,6 +1100,42 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
         onCancel={handlePasswordCancel}
         externalError={passwordError}
       />
+
+      {/* Soak time privacy warning modal */}
+      {tx.soakWarning && (
+        <div className="wallet-modal-overlay" onClick={() => tx.soakWarning?.resolve(false)}>
+          <div className="wallet-modal" onClick={e => e.stopPropagation()} style={{ minWidth: 360, maxWidth: 420 }}>
+            <div className="wallet-modal__title">Low Privacy Warning</div>
+
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 16 }}>
+              <p style={{ marginBottom: 12 }}>
+                Only <strong style={{ color: 'var(--warning, #FF9800)' }}>{tx.soakWarning.depositsSince}</strong> deposit(s) have been made since yours.
+                We recommend waiting for at least <strong>{tx.soakWarning.needed} more</strong> to grow your anonymity set.
+              </p>
+              <p style={{ marginBottom: 0 }}>
+                Withdrawing now makes it easier for an observer to link your deposit and withdrawal by process of elimination.
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="tx-execute"
+                style={{ flex: 1, background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }}
+                onClick={() => tx.soakWarning?.resolve(false)}
+              >
+                Wait
+              </button>
+              <button
+                className="tx-execute"
+                style={{ flex: 1, background: 'var(--warning, #FF9800)', color: '#fff' }}
+                onClick={() => tx.soakWarning?.resolve(true)}
+              >
+                Accept Risk
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

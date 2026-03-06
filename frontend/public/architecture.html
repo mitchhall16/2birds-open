@@ -1,0 +1,1661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2birds Privacy SDK — Full Architecture</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0f;
+    color: #e0e0e8;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    line-height: 1.6;
+    padding: 40px 20px;
+  }
+  .container { max-width: 1200px; margin: 0 auto; }
+  h1 {
+    font-size: 2.2rem;
+    text-align: center;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, #7c5cfc, #00d4aa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    text-align: center;
+    color: #888;
+    margin-bottom: 48px;
+    font-size: 0.95rem;
+  }
+
+  /* Section */
+  .section {
+    margin-bottom: 56px;
+    background: #12121a;
+    border: 1px solid #1e1e2e;
+    border-radius: 16px;
+    padding: 32px;
+    position: relative;
+    overflow: hidden;
+  }
+  .section::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    border-radius: 16px 16px 0 0;
+  }
+  .section.s-overview::before { background: linear-gradient(90deg, #7c5cfc, #00d4aa, #fc5c7c); }
+  .section.s-deposit::before { background: linear-gradient(90deg, #7c5cfc, #5c8cfc); }
+  .section.s-withdraw::before { background: linear-gradient(90deg, #00d4aa, #00a4d4); }
+  .section.s-send::before { background: linear-gradient(90deg, #fc5c7c, #fc8c5c); }
+  .section.s-split::before { background: linear-gradient(90deg, #fca05c, #fcd45c); }
+  .section.s-combine::before { background: linear-gradient(90deg, #5cfca0, #5cd4fc); }
+  .section.s-security::before { background: linear-gradient(90deg, #fc5c5c, #7c5cfc, #00d4aa); }
+  .section.s-merkle::before { background: linear-gradient(90deg, #d45cfc, #5c8cfc); }
+  .section.s-zk::before { background: linear-gradient(90deg, #fcd45c, #fc5c7c); }
+  .section.s-keys::before { background: linear-gradient(90deg, #5cd4fc, #5cfca0); }
+  .section.s-relayer::before { background: linear-gradient(90deg, #fc8c5c, #d45cfc); }
+
+  h2 {
+    font-size: 1.4rem;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h3 {
+    font-size: 1rem;
+    margin: 20px 0 10px;
+    color: #ccc;
+  }
+
+  /* Layer stack */
+  .layer-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 20px 0;
+  }
+  .layer {
+    border: 1px solid #1e1e2e;
+    padding: 16px 20px;
+    position: relative;
+  }
+  .layer:first-child { border-radius: 10px 10px 0 0; }
+  .layer:last-child { border-radius: 0 0 10px 10px; }
+  .layer + .layer { border-top: none; }
+  .layer-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .l-ui { background: #0e0e16; }
+  .l-ui .layer-label { color: #7c5cfc; background: #7c5cfc15; }
+  .l-crypto { background: #0c1014; }
+  .l-crypto .layer-label { color: #fca05c; background: #fca05c15; }
+  .l-zk { background: #0c0e14; }
+  .l-zk .layer-label { color: #fc5c7c; background: #fc5c7c15; }
+  .l-txn { background: #0c1410; }
+  .l-txn .layer-label { color: #5cd4fc; background: #5cd4fc15; }
+  .l-chain { background: #0e100c; }
+  .l-chain .layer-label { color: #00d4aa; background: #00d4aa15; }
+  .l-storage { background: #14100c; }
+  .l-storage .layer-label { color: #d45cfc; background: #d45cfc15; }
+  .l-network { background: #140c0c; }
+  .l-network .layer-label { color: #fc5c5c; background: #fc5c5c15; }
+
+  .layer-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin-bottom: 6px;
+  }
+  .layer-detail {
+    font-size: 0.85rem;
+    color: #999;
+  }
+  .layer-detail code {
+    background: #1a1a2a;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 0.8rem;
+    color: #ccc;
+  }
+
+  /* Data flow arrows between layers */
+  .layer-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 0;
+    color: #333;
+    font-size: 0.75rem;
+  }
+  .layer-arrow svg { display: block; }
+
+  /* Inline data box */
+  .data-box {
+    display: inline-block;
+    background: #1a1a2a;
+    border: 1px solid #2a2a3a;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.78rem;
+    color: #bbb;
+    margin: 8px 0;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: pre;
+    line-height: 1.8;
+  }
+  .data-box .field { color: #7c5cfc; }
+  .data-box .op { color: #fca05c; }
+  .data-box .val { color: #00d4aa; }
+  .data-box .comment { color: #555; }
+
+  /* Horizontal flow */
+  .hflow {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin: 16px 0;
+    overflow-x: auto;
+  }
+  .hflow-box {
+    flex: 1;
+    min-width: 140px;
+    border: 1px solid #1e1e2e;
+    padding: 14px 16px;
+    background: #0e0e16;
+    text-align: center;
+  }
+  .hflow-box:first-child { border-radius: 10px 0 0 10px; }
+  .hflow-box:last-child { border-radius: 0 10px 10px 0; }
+  .hflow-box + .hflow-box { border-left: none; }
+  .hflow-box .hf-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+  }
+  .hflow-box .hf-content {
+    font-size: 0.82rem;
+    color: #aaa;
+  }
+  .hflow-arrow {
+    display: flex;
+    align-items: center;
+    padding: 0 2px;
+    color: #444;
+    font-size: 1.2rem;
+    flex-shrink: 0;
+  }
+
+  /* Merkle tree visual */
+  .tree-visual {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin: 16px 0;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.75rem;
+    color: #888;
+  }
+  .tree-row {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .tree-node {
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid #2a2a3a;
+    background: #0e0e16;
+    text-align: center;
+    min-width: 50px;
+  }
+  .tree-node.root { border-color: #00d4aa44; color: #00d4aa; background: #00d4aa08; }
+  .tree-node.internal { border-color: #7c5cfc33; color: #a88cff; }
+  .tree-node.leaf { border-color: #fca05c33; color: #fcc08c; }
+  .tree-node.empty { border-color: #1e1e2e; color: #444; }
+  .tree-lines { color: #333; font-size: 0.7rem; letter-spacing: 2px; }
+
+  /* Pipeline */
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 16px 0;
+  }
+  .pipe-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: #0e0e16;
+    border: 1px solid #1a1a2a;
+  }
+  .pipe-step:hover { border-color: #2a2a3a; }
+  .pipe-num {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.7rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    background: #1a1a2a;
+    color: #888;
+  }
+  .pipe-content { flex: 1; }
+  .pipe-title { font-weight: 600; font-size: 0.88rem; }
+  .pipe-desc { font-size: 0.8rem; color: #888; margin-top: 2px; }
+  .pipe-data {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.75rem;
+    color: #666;
+    margin-top: 4px;
+    padding: 6px 10px;
+    background: #0a0a12;
+    border-radius: 4px;
+    overflow-x: auto;
+  }
+
+  /* Tags */
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .tag-ui { background: #7c5cfc18; color: #a88cff; }
+  .tag-crypto { background: #fca05c18; color: #fcc08c; }
+  .tag-zk { background: #fc5c7c18; color: #ff8ca0; }
+  .tag-chain { background: #00d4aa18; color: #4aecc8; }
+  .tag-net { background: #fc5c5c18; color: #fc8c8c; }
+  .tag-store { background: #d45cfc18; color: #e08cfc; }
+
+  /* Pool diagram */
+  .pool-diagram {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    margin: 20px 0;
+    flex-wrap: wrap;
+  }
+  .pool-box {
+    border: 2px solid #2a2a3a;
+    border-radius: 12px;
+    padding: 16px 20px;
+    min-width: 160px;
+    text-align: center;
+    background: #0e0e16;
+  }
+  .pool-box .pool-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #888;
+    margin-bottom: 10px;
+  }
+  .pool-note {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    font-size: 0.82rem;
+  }
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .dot.active { background: #00d4aa; }
+  .dot.spent { background: #fc5c5c; }
+  .dot.new { background: #7c5cfc; }
+  .pool-arrow-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    color: #555;
+    font-size: 0.78rem;
+    min-width: 80px;
+  }
+
+  /* Security grid */
+  .sec-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+    margin-top: 12px;
+  }
+  .sec-card {
+    background: #0e0e16;
+    border: 1px solid #1e1e2e;
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .sec-card h4 {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+  }
+  .sec-card ul { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+  .sec-card li {
+    font-size: 0.82rem;
+    color: #aaa;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .sec-card li::before {
+    content: '';
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 7px;
+  }
+  .sc-t h4 { color: #fca05c; }
+  .sc-t li::before { background: #fca05c; }
+  .sc-c h4 { color: #7c5cfc; }
+  .sc-c li::before { background: #7c5cfc; }
+  .sc-k h4 { color: #00d4aa; }
+  .sc-k li::before { background: #00d4aa; }
+  .sc-n h4 { color: #fc5c7c; }
+  .sc-n li::before { background: #fc5c7c; }
+  .sc-a h4 { color: #5cd4fc; }
+  .sc-a li::before { background: #5cd4fc; }
+
+  /* Cost bar */
+  .cost-bar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-top: 16px;
+  }
+  .cost-item {
+    background: #0e0e16;
+    border: 1px solid #1e1e2e;
+    border-radius: 10px;
+    padding: 16px;
+    text-align: center;
+  }
+  .cost-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1px; color: #666; margin-bottom: 6px; }
+  .cost-val { font-size: 1.8rem; font-weight: 700; }
+  .cost-sub { font-size: 0.78rem; color: #666; margin-top: 4px; }
+  .cost-green .cost-val { color: #00d4aa; }
+  .cost-red .cost-val { color: #fc5c5c; }
+
+  /* Recovery */
+  .recovery {
+    background: #1a1420;
+    border: 1px dashed #fca05c44;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-top: 14px;
+    font-size: 0.82rem;
+    color: #ccc;
+  }
+  .recovery strong { color: #fcc08c; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.5px; }
+  .recovery ul { list-style: none; margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+
+  .tiers { display: flex; gap: 10px; justify-content: center; margin-bottom: 40px; flex-wrap: wrap; }
+  .tier {
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border: 1px solid;
+  }
+  .t01 { background: #7c5cfc12; border-color: #7c5cfc44; color: #a88cff; }
+  .t05 { background: #00d4aa12; border-color: #00d4aa44; color: #4aecc8; }
+  .t10 { background: #fca05c12; border-color: #fca05c44; color: #fcc08c; }
+
+  .note { font-size: 0.82rem; color: #666; margin-top: 8px; font-style: italic; }
+
+  @media (max-width: 700px) {
+    .hflow { flex-direction: column; }
+    .hflow-box:first-child { border-radius: 10px 10px 0 0; }
+    .hflow-box:last-child { border-radius: 0 0 10px 10px; }
+    .hflow-box + .hflow-box { border-left: 1px solid #1e1e2e; border-top: none; }
+    .hflow-arrow { transform: rotate(90deg); }
+    .pool-diagram { flex-direction: column; }
+    .cost-bar { grid-template-columns: 1fr; }
+    .sec-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.6rem; }
+    .section { padding: 20px 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>2birds Privacy SDK</h1>
+<p class="subtitle">Full-stack architecture &mdash; every layer from UI to chain</p>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- TLDR / ELI5 -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section" style="overflow:visible;background:linear-gradient(135deg,#12121a 0%,#161420 100%);">
+  <div style="position:absolute;top:0;left:0;right:0;height:3px;border-radius:16px 16px 0 0;background:linear-gradient(90deg,#fcd45c,#00d4aa);"></div>
+  <h2 style="justify-content:center;">TL;DR</h2>
+  <p style="text-align:center;font-size:1.05rem;color:#ccc;max-width:700px;margin:0 auto 28px;">Put ALGO in a shared jar. Prove you put some in. Take it out later — nobody knows which coins were yours.</p>
+
+  <div style="display:flex;gap:0;justify-content:center;flex-wrap:wrap;max-width:900px;margin:0 auto;">
+    <!-- Step 1 -->
+    <div style="flex:1;min-width:160px;text-align:center;padding:20px 14px;position:relative;">
+      <div style="width:56px;height:56px;border-radius:50%;background:#7c5cfc18;border:2px solid #7c5cfc44;display:flex;align-items:center;justify-content:center;font-size:1.6rem;margin:0 auto 10px;">&#x1F4B0;</div>
+      <div style="font-weight:700;font-size:0.95rem;margin-bottom:4px;">Deposit</div>
+      <div style="font-size:0.8rem;color:#888;">You drop 1 ALGO into a pool with everyone else's ALGO</div>
+      <div style="position:absolute;right:-8px;top:50%;color:#333;font-size:1.4rem;">&#x279C;</div>
+    </div>
+    <!-- Step 2 -->
+    <div style="flex:1;min-width:160px;text-align:center;padding:20px 14px;position:relative;">
+      <div style="width:56px;height:56px;border-radius:50%;background:#fca05c18;border:2px solid #fca05c44;display:flex;align-items:center;justify-content:center;font-size:1.6rem;margin:0 auto 10px;">&#x1F510;</div>
+      <div style="font-weight:700;font-size:0.95rem;margin-bottom:4px;">Get a Secret Receipt</div>
+      <div style="font-size:0.8rem;color:#888;">You get a cryptographic note (secret + nullifier) that proves you deposited</div>
+      <div style="position:absolute;right:-8px;top:50%;color:#333;font-size:1.4rem;">&#x279C;</div>
+    </div>
+    <!-- Step 3 -->
+    <div style="flex:1;min-width:160px;text-align:center;padding:20px 14px;position:relative;">
+      <div style="width:56px;height:56px;border-radius:50%;background:#00d4aa18;border:2px solid #00d4aa44;display:flex;align-items:center;justify-content:center;font-size:1.6rem;margin:0 auto 10px;">&#x1F3AD;</div>
+      <div style="font-weight:700;font-size:0.95rem;margin-bottom:4px;">Mix with Others</div>
+      <div style="font-size:0.8rem;color:#888;">More people deposit. All deposits look the same — just hashes in a tree.</div>
+      <div style="position:absolute;right:-8px;top:50%;color:#333;font-size:1.4rem;">&#x279C;</div>
+    </div>
+    <!-- Step 4 -->
+    <div style="flex:1;min-width:160px;text-align:center;padding:20px 14px;">
+      <div style="width:56px;height:56px;border-radius:50%;background:#fc5c7c18;border:2px solid #fc5c7c44;display:flex;align-items:center;justify-content:center;font-size:1.6rem;margin:0 auto 10px;">&#x2728;</div>
+      <div style="font-weight:700;font-size:0.95rem;margin-bottom:4px;">Withdraw Privately</div>
+      <div style="font-size:0.8rem;color:#888;">Prove you own <em>a</em> deposit without saying which one. ALGO sent to any address.</div>
+    </div>
+  </div>
+
+  <div style="max-width:700px;margin:28px auto 0;background:#0a0a12;border-radius:12px;padding:20px 24px;">
+    <div style="text-align:center;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#fcd45c;margin-bottom:14px;">ELI5 — Explain Like I'm 5</div>
+
+    <div style="display:flex;flex-direction:column;gap:16px;">
+      <div style="display:flex;gap:14px;align-items:flex-start;">
+        <div style="font-size:1.4rem;flex-shrink:0;">&#x1F36A;</div>
+        <div>
+          <div style="font-size:0.9rem;color:#ddd;"><strong>The Cookie Jar</strong></div>
+          <div style="font-size:0.82rem;color:#999;">Imagine 10 kids each put 1 cookie in a jar. The jar is see-through — you can see 10 cookies went in. But they all look the same.</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:14px;align-items:flex-start;">
+        <div style="font-size:1.4rem;flex-shrink:0;">&#x1F3AB;</div>
+        <div>
+          <div style="font-size:0.9rem;color:#ddd;"><strong>The Secret Ticket</strong></div>
+          <div style="font-size:0.82rem;color:#999;">Each kid gets a secret ticket when they put their cookie in. The ticket proves "I put a cookie in" but doesn't say which cookie is theirs.</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:14px;align-items:flex-start;">
+        <div style="font-size:1.4rem;flex-shrink:0;">&#x2753;</div>
+        <div>
+          <div style="font-size:0.9rem;color:#ddd;"><strong>The Magic Trick</strong></div>
+          <div style="font-size:0.82rem;color:#999;">When a kid wants a cookie back, they show their ticket to a <em>magic box</em> (ZK proof). The box says "yep, this kid put a cookie in" — but <strong style="color:#00d4aa;">nobody can tell which cookie was theirs</strong>. Not the jar, not the other kids, not even the teacher watching.</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:14px;align-items:flex-start;">
+        <div style="font-size:1.4rem;flex-shrink:0;">&#x1F46B;</div>
+        <div>
+          <div style="font-size:0.9rem;color:#ddd;"><strong>Private Send = Giving Your Ticket Away</strong></div>
+          <div style="font-size:0.82rem;color:#999;">You can put a cookie in and give the encrypted ticket to a friend. They take the cookie out later. Nobody knows you gave it to them.</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:14px;align-items:flex-start;">
+        <div style="font-size:1.4rem;flex-shrink:0;">&#x1F4AA;</div>
+        <div>
+          <div style="font-size:0.9rem;color:#ddd;"><strong>More Kids = More Privacy</strong></div>
+          <div style="font-size:0.82rem;color:#999;">With 10 kids, there's a 1-in-10 chance of guessing whose cookie is whose. With 100 kids, it's 1-in-100. The more people use the pool, the more private everyone becomes.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="tiers">
+  <span class="tier t01">0.1 ALGO Pool</span>
+  <span class="tier t05">0.5 ALGO Pool</span>
+  <span class="tier t10">1.0 ALGO Pool</span>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- DEPOSITOR OVERVIEW — WHAT YOU SEE vs WHAT HAPPENS -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section" style="overflow:visible;">
+  <div style="position:absolute;top:0;left:0;right:0;height:3px;border-radius:16px 16px 0 0;background:linear-gradient(90deg,#7c5cfc,#00d4aa,#fca05c);"></div>
+  <h2>What You See vs. What Happens</h2>
+  <p style="font-size:0.88rem;color:#888;margin-bottom:24px;">The depositor interacts with a simple UI. Behind it, 6 layers of cryptography, proofs, and blockchain logic protect their privacy.</p>
+
+  <div style="display:flex;gap:24px;flex-wrap:wrap;">
+
+    <!-- LEFT: What the user sees -->
+    <div style="flex:1;min-width:280px;">
+      <div style="text-align:center;padding:10px 0 14px;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#7c5cfc;">Layer 1 — What the Depositor Sees</div>
+
+      <div style="background:#0e0e16;border:2px solid #7c5cfc33;border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:14px;">
+
+        <!-- Step: Choose tier -->
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="width:36px;height:36px;border-radius:10px;background:#7c5cfc18;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;">1</div>
+          <div>
+            <div style="font-weight:600;font-size:0.9rem;">Pick amount</div>
+            <div style="font-size:0.8rem;color:#888;">Choose 0.1, 0.5, or 1.0 ALGO</div>
+          </div>
+        </div>
+
+        <!-- Step: Password -->
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="width:36px;height:36px;border-radius:10px;background:#7c5cfc18;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;">2</div>
+          <div>
+            <div style="font-weight:600;font-size:0.9rem;">Enter password</div>
+            <div style="font-size:0.8rem;color:#888;">8+ characters, combined with wallet signature</div>
+          </div>
+        </div>
+
+        <!-- Step: Click deposit -->
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="width:36px;height:36px;border-radius:10px;background:#7c5cfc18;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;">3</div>
+          <div>
+            <div style="font-weight:600;font-size:0.9rem;">Click "Deposit"</div>
+            <div style="font-size:0.8rem;color:#888;">See progress bar while proving key downloads</div>
+          </div>
+        </div>
+
+        <!-- Step: Wait -->
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="width:36px;height:36px;border-radius:10px;background:#7c5cfc18;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;">4</div>
+          <div>
+            <div style="font-weight:600;font-size:0.9rem;">Wait for batch window</div>
+            <div style="font-size:0.8rem;color:#888;">Countdown to next :00/:15/:30/:45</div>
+          </div>
+        </div>
+
+        <!-- Step: Approve -->
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="width:36px;height:36px;border-radius:10px;background:#7c5cfc18;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;">5</div>
+          <div>
+            <div style="font-weight:600;font-size:0.9rem;">Approve in wallet</div>
+            <div style="font-size:0.8rem;color:#888;">Pera/Defly popup asks to sign transaction</div>
+          </div>
+        </div>
+
+        <!-- Step: Done -->
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="width:36px;height:36px;border-radius:10px;background:#00d4aa18;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;color:#00d4aa;">&#10003;</div>
+          <div>
+            <div style="font-weight:600;font-size:0.9rem;color:#00d4aa;">Deposit complete</div>
+            <div style="font-size:0.8rem;color:#888;">Note saved. ALGO is in the privacy pool.</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="text-align:center;margin-top:12px;font-size:0.78rem;color:#555;">Total user actions: <strong style="color:#aaa;">3 clicks + 1 password</strong></div>
+    </div>
+
+    <!-- MIDDLE: Arrow -->
+    <div style="display:flex;align-items:center;justify-content:center;min-width:40px;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+        <svg width="40" height="24" viewBox="0 0 40 24"><path d="M0 12 H30 L24 6 M30 12 L24 18" stroke="#333" stroke-width="2" fill="none"/></svg>
+        <div style="font-size:0.65rem;color:#444;text-transform:uppercase;letter-spacing:1px;writing-mode:vertical-lr;transform:rotate(180deg);height:80px;display:flex;align-items:center;">triggers</div>
+        <svg width="40" height="24" viewBox="0 0 40 24"><path d="M0 12 H30 L24 6 M30 12 L24 18" stroke="#333" stroke-width="2" fill="none"/></svg>
+      </div>
+    </div>
+
+    <!-- RIGHT: What actually happens -->
+    <div style="flex:1.3;min-width:320px;">
+      <div style="text-align:center;padding:10px 0 14px;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#fca05c;">Layers 2-7 — What Actually Happens</div>
+
+      <div style="background:#0e0e16;border:2px solid #fca05c33;border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:10px;">
+
+        <div style="display:flex;gap:10px;align-items:flex-start;">
+          <div style="width:8px;height:8px;border-radius:50%;background:#fca05c;margin-top:6px;flex-shrink:0;"></div>
+          <div>
+            <div style="font-size:0.82rem;"><strong style="color:#fca05c;">Key Derivation</strong> <span style="color:#555;">&mdash; Layer 2</span></div>
+            <div style="font-size:0.78rem;color:#777;">PBKDF2(wallet_signature + password, 100k rounds) &rarr; master key &rarr; deterministic secret + nullifier + commitment</div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:flex-start;">
+          <div style="width:8px;height:8px;border-radius:50%;background:#fc5c7c;margin-top:6px;flex-shrink:0;"></div>
+          <div>
+            <div style="font-size:0.82rem;"><strong style="color:#fc5c7c;">ZK Proof Generation</strong> <span style="color:#555;">&mdash; Layer 3</span></div>
+            <div style="font-size:0.78rem;color:#777;">Download 131 MB PLONK proving key &rarr; snarkjs generates proof in browser &rarr; "I know the preimage of this commitment"</div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:flex-start;">
+          <div style="width:8px;height:8px;border-radius:50%;background:#5cd4fc;margin-top:6px;flex-shrink:0;"></div>
+          <div>
+            <div style="font-size:0.82rem;"><strong style="color:#5cd4fc;">Transaction Building</strong> <span style="color:#555;">&mdash; Layer 4</span></div>
+            <div style="font-size:0.78rem;color:#777;">Proof &rarr; 4 LogicSig txns (PLONK verify) + 1 payment + 1 app call &rarr; atomic group of 6 transactions</div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:flex-start;">
+          <div style="width:8px;height:8px;border-radius:50%;background:#00d4aa;margin-top:6px;flex-shrink:0;"></div>
+          <div>
+            <div style="font-size:0.82rem;"><strong style="color:#00d4aa;">On-chain Execution</strong> <span style="color:#555;">&mdash; Layer 5</span></div>
+            <div style="font-size:0.78rem;color:#777;">Contract verifies LogicSig addresses &rarr; stores commitment in Merkle tree (level 20, MiMC) &rarr; updates root in ring buffer &rarr; accepts ALGO payment</div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:flex-start;">
+          <div style="width:8px;height:8px;border-radius:50%;background:#d45cfc;margin-top:6px;flex-shrink:0;"></div>
+          <div>
+            <div style="font-size:0.82rem;"><strong style="color:#d45cfc;">Note Storage</strong> <span style="color:#555;">&mdash; Layer 6</span></div>
+            <div style="font-size:0.78rem;color:#777;">Note (secret + nullifier) &rarr; AES-GCM encrypt with per-tab ephemeral key &rarr; save to localStorage. This is your "receipt" to withdraw later.</div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;align-items:flex-start;">
+          <div style="width:8px;height:8px;border-radius:50%;background:#fca05c44;margin-top:6px;flex-shrink:0;border:1px solid #fca05c;"></div>
+          <div>
+            <div style="font-size:0.82rem;"><strong style="color:#888;">Timing Protection</strong> <span style="color:#555;">&mdash; throughout</span></div>
+            <div style="font-size:0.78rem;color:#777;">Batch window wait &rarr; cooldown enforcement &rarr; cluster detection. Deposits from different users land in the same time window.</div>
+          </div>
+        </div>
+
+      </div>
+
+      <div style="text-align:center;margin-top:12px;font-size:0.78rem;color:#555;">Behind the scenes: <strong style="color:#aaa;">~15 operations across 6 layers</strong></div>
+    </div>
+  </div>
+
+  <!-- Withdraw overview -->
+  <div style="margin-top:36px;border-top:1px solid #1e1e2e;padding-top:28px;">
+    <h3 style="margin-bottom:16px;font-size:1.1rem;">Withdrawing — What You See vs. What Happens</h3>
+
+    <div style="display:flex;gap:24px;flex-wrap:wrap;">
+
+      <div style="flex:1;min-width:280px;">
+        <div style="text-align:center;padding:10px 0 14px;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#00d4aa;">What the Withdrawer Sees</div>
+        <div style="background:#0e0e16;border:2px solid #00d4aa33;border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:14px;">
+
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div style="width:36px;height:36px;border-radius:10px;background:#00d4aa18;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;">1</div>
+            <div>
+              <div style="font-weight:600;font-size:0.9rem;">Select note</div>
+              <div style="font-size:0.8rem;color:#888;">Pick which deposited note to withdraw</div>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div style="width:36px;height:36px;border-radius:10px;background:#00d4aa18;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;">2</div>
+            <div>
+              <div style="font-weight:600;font-size:0.9rem;">Enter recipient address</div>
+              <div style="font-size:0.8rem;color:#888;">Where to send the ALGO (can be any address)</div>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div style="width:36px;height:36px;border-radius:10px;background:#00d4aa18;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;">3</div>
+            <div>
+              <div style="font-weight:600;font-size:0.9rem;">Click "Withdraw"</div>
+              <div style="font-size:0.8rem;color:#888;">Wait for proof + submission</div>
+            </div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div style="width:36px;height:36px;border-radius:10px;background:#00d4aa18;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;color:#00d4aa;">&#10003;</div>
+            <div>
+              <div style="font-weight:600;font-size:0.9rem;color:#00d4aa;">ALGO received</div>
+              <div style="font-size:0.8rem;color:#888;">Recipient gets ALGO. No link to depositor.</div>
+            </div>
+          </div>
+        </div>
+        <div style="text-align:center;margin-top:12px;font-size:0.78rem;color:#555;">Total user actions: <strong style="color:#aaa;">2 clicks + 1 address</strong></div>
+      </div>
+
+      <!-- Arrow -->
+      <div style="display:flex;align-items:center;justify-content:center;min-width:40px;">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+          <svg width="40" height="24" viewBox="0 0 40 24"><path d="M0 12 H30 L24 6 M30 12 L24 18" stroke="#333" stroke-width="2" fill="none"/></svg>
+          <div style="font-size:0.65rem;color:#444;text-transform:uppercase;letter-spacing:1px;writing-mode:vertical-lr;transform:rotate(180deg);height:80px;display:flex;align-items:center;">triggers</div>
+          <svg width="40" height="24" viewBox="0 0 40 24"><path d="M0 12 H30 L24 6 M30 12 L24 18" stroke="#333" stroke-width="2" fill="none"/></svg>
+        </div>
+      </div>
+
+      <div style="flex:1.3;min-width:320px;">
+        <div style="text-align:center;padding:10px 0 14px;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#fca05c;">What Actually Happens</div>
+        <div style="background:#0e0e16;border:2px solid #fca05c33;border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:10px;">
+
+          <div style="display:flex;gap:10px;align-items:flex-start;">
+            <div style="width:8px;height:8px;border-radius:50%;background:#fc5c5c;margin-top:6px;flex-shrink:0;"></div>
+            <div>
+              <div style="font-size:0.82rem;"><strong style="color:#fc5c5c;">Privacy Guards</strong></div>
+              <div style="font-size:0.78rem;color:#777;">Check pool has 5+ deposits (anonymity set) &rarr; check 2-min cooldown &rarr; check cluster limit. Blocks if pool is too small.</div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:10px;align-items:flex-start;">
+            <div style="width:8px;height:8px;border-radius:50%;background:#7c5cfc;margin-top:6px;flex-shrink:0;"></div>
+            <div>
+              <div style="font-size:0.82rem;"><strong style="color:#7c5cfc;">Merkle Tree Sync</strong></div>
+              <div style="font-size:0.78rem;color:#777;">Fetch all commitment boxes from pool contract &rarr; rebuild 20-level MiMC tree locally &rarr; find your leaf &rarr; extract 20 sibling hashes as proof path</div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:10px;align-items:flex-start;">
+            <div style="width:8px;height:8px;border-radius:50%;background:#fc5c7c;margin-top:6px;flex-shrink:0;"></div>
+            <div>
+              <div style="font-size:0.82rem;"><strong style="color:#fc5c7c;">ZK Proof</strong></div>
+              <div style="font-size:0.78rem;color:#777;">"I know a secret+nullifier for SOME commitment in this tree" &mdash; without revealing which one. That's the privacy.</div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:10px;align-items:flex-start;">
+            <div style="width:8px;height:8px;border-radius:50%;background:#fca05c;margin-top:6px;flex-shrink:0;"></div>
+            <div>
+              <div style="font-size:0.82rem;"><strong style="color:#fca05c;">Timing Jitter</strong></div>
+              <div style="font-size:0.78rem;color:#777;">5-30 second random delay before submitting. Prevents timing correlation between your deposit and withdrawal.</div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:10px;align-items:flex-start;">
+            <div style="width:8px;height:8px;border-radius:50%;background:#d45cfc;margin-top:6px;flex-shrink:0;"></div>
+            <div>
+              <div style="font-size:0.82rem;"><strong style="color:#d45cfc;">Relayer Submission</strong></div>
+              <div style="font-size:0.78rem;color:#777;">Randomly pick 1 of 2 relayers &rarr; POST proof &rarr; relayer builds 6-txn atomic group &rarr; submits to Algorand &rarr; your IP never touches the chain</div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:10px;align-items:flex-start;">
+            <div style="width:8px;height:8px;border-radius:50%;background:#00d4aa;margin-top:6px;flex-shrink:0;"></div>
+            <div>
+              <div style="font-size:0.82rem;"><strong style="color:#00d4aa;">Contract Verification</strong></div>
+              <div style="font-size:0.78rem;color:#777;">Verify proof (LogicSig) &rarr; check nullifier not spent &rarr; check root is valid &rarr; record nullifier &rarr; send ALGO to recipient</div>
+            </div>
+          </div>
+
+        </div>
+        <div style="text-align:center;margin-top:12px;font-size:0.78rem;color:#555;">Behind the scenes: <strong style="color:#aaa;">~20 operations across 7 layers</strong></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- The privacy magic -->
+  <div style="margin-top:32px;background:#0e0e16;border:2px solid #00d4aa22;border-radius:14px;padding:24px;text-align:center;">
+    <div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#00d4aa;margin-bottom:14px;">Why This Creates Privacy</div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center;">
+      <div style="flex:1;min-width:200px;padding:12px;background:#00d4aa08;border-radius:10px;">
+        <div style="font-size:2rem;margin-bottom:4px;">&#x1f464;</div>
+        <div style="font-size:0.85rem;font-weight:600;">Alice deposits 1 ALGO</div>
+        <div style="font-size:0.78rem;color:#777;margin-top:4px;">On-chain sees: "Someone deposited 1 ALGO. Here's commitment <code style="font-size:0.7rem;">0x7a3f...</code>"</div>
+      </div>
+      <div style="flex:1;min-width:200px;padding:12px;background:#00d4aa08;border-radius:10px;">
+        <div style="font-size:2rem;margin-bottom:4px;">&#x1f465;</div>
+        <div style="font-size:0.85rem;font-weight:600;">9 others deposit 1 ALGO</div>
+        <div style="font-size:0.78rem;color:#777;margin-top:4px;">Pool now has 10 commitments. All look identical — same denomination, different hashes.</div>
+      </div>
+      <div style="flex:1;min-width:200px;padding:12px;background:#00d4aa08;border-radius:10px;">
+        <div style="font-size:2rem;margin-bottom:4px;">&#x2753;</div>
+        <div style="font-size:0.85rem;font-weight:600;">Alice withdraws to Bob</div>
+        <div style="font-size:0.78rem;color:#777;margin-top:4px;">On-chain sees: "Someone proved they own A commitment. Bob gets 1 ALGO." <strong style="color:#00d4aa;">Which of the 10? Nobody knows.</strong></div>
+      </div>
+    </div>
+    <div style="margin-top:16px;font-size:0.82rem;color:#888;">Privacy = <strong style="color:#ccc;">anonymity set</strong>. With 10 deposits, there's a 1/10 chance of guessing which deposit belongs to Alice. With 100, it's 1/100. The more deposits, the stronger the privacy.</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- SYSTEM OVERVIEW -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-overview">
+  <h2>System Overview — All Layers</h2>
+
+  <div class="layer-stack">
+    <div class="layer l-ui">
+      <span class="layer-label">Layer 1 — UI</span>
+      <div class="layer-title">React Frontend (TransactionFlow.tsx)</div>
+      <div class="layer-detail">User selects tier, enters password, clicks Deposit/Withdraw. Manages tab state, shows progress, handles wallet connection via <code>@txnlab/use-wallet-react</code>.</div>
+    </div>
+    <div class="layer l-crypto">
+      <span class="layer-label">Layer 2 — Crypto</span>
+      <div class="layer-title">Key Derivation &amp; Note Management (privacy.ts)</div>
+      <div class="layer-detail">
+        Derives master key from wallet signature + password. Generates deterministic notes (secret, nullifier, commitment). Encrypts/decrypts note storage. This is where the privacy math happens.
+      </div>
+    </div>
+    <div class="layer l-zk">
+      <span class="layer-label">Layer 3 — ZK Proofs</span>
+      <div class="layer-title">Circuit Proving (snarkjs + circom WASM)</div>
+      <div class="layer-detail">
+        Downloads 131 MB PLONK zkey from R2 CDN. Runs <code>snarkjs.plonk.fullProve()</code> in browser. Produces proof + public signals. Proof says "I know a secret for a commitment in this tree" without revealing which one.
+      </div>
+    </div>
+    <div class="layer l-txn">
+      <span class="layer-label">Layer 4 — Transaction</span>
+      <div class="layer-title">Transaction Building (useTransaction.ts + plonkVerifierLsig.ts)</div>
+      <div class="layer-detail">
+        Encodes proof into 4 LogicSig transactions (PLONK verification split across 4 txns due to AVM opcode budget). Adds payment txn + pool app call. Groups atomically. Wallet signs the payment/app call txns; LogicSig txns are self-signed.
+      </div>
+    </div>
+    <div class="layer l-chain">
+      <span class="layer-label">Layer 5 — On-chain</span>
+      <div class="layer-title">Smart Contracts (TealScript → AVM)</div>
+      <div class="layer-detail">
+        Pool contract verifies proof passed LogicSig validation (checks LogicSig address matches known verifier). Stores commitment in Merkle tree box. Records nullifier to prevent double-spend. Sends/receives ALGO.
+      </div>
+    </div>
+    <div class="layer l-storage">
+      <span class="layer-label">Layer 6 — Storage</span>
+      <div class="layer-title">Note Persistence (localStorage + sessionStorage)</div>
+      <div class="layer-detail">
+        Notes encrypted with AES-GCM using per-tab ephemeral key (sessionStorage). Backups encrypted with AES-256-GCM + PBKDF2 100k rounds. Deposit index counter prevents duplicate commitments across tabs.
+      </div>
+    </div>
+    <div class="layer l-network">
+      <span class="layer-label">Layer 7 — Network</span>
+      <div class="layer-title">Relayer Network (Cloudflare Workers)</div>
+      <div class="layer-detail">
+        2 independent relayers submit withdrawal txns so recipient address isn't linked to sender IP. Relayer sees: proof + recipient + amount. Relayer <em>never</em> sees: secret, nullifier, which commitment is being spent.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- KEY DERIVATION DEEP DIVE -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-keys">
+  <h2>Layer 2 Deep Dive — Key Derivation &amp; Note Creation</h2>
+
+  <h3>Master Key Derivation</h3>
+  <div class="pipeline">
+    <div class="pipe-step">
+      <div class="pipe-num">1</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Wallet Signature <span class="tag tag-ui">wallet</span></div>
+        <div class="pipe-desc">Wallet signs a fixed message: "2birds privacy pool key derivation"</div>
+        <div class="pipe-data">signData("2birds privacy pool key derivation") → signature (64 bytes)</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">2</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Password Input <span class="tag tag-ui">user</span></div>
+        <div class="pipe-desc">User enters password (min 8 chars). Combined with wallet signature.</div>
+        <div class="pipe-data">input = signature + UTF8(password)</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">3</div>
+      <div class="pipe-content">
+        <div class="pipe-title">PBKDF2 Derivation <span class="tag tag-crypto">crypto</span></div>
+        <div class="pipe-desc">100,000 iterations of PBKDF2-SHA256. Produces 256-bit master key. Intentionally slow to resist brute-force.</div>
+        <div class="pipe-data">masterKey = PBKDF2(input, salt="2birds", iterations=100000, hash=SHA256) → bigint (mod BN254_R)</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Note Derivation (deterministic from master key + index)</h3>
+  <div class="pipeline">
+    <div class="pipe-step">
+      <div class="pipe-num">1</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Claim Deposit Index <span class="tag tag-store">atomic</span></div>
+        <div class="pipe-desc">Atomically reads and increments counter. Two tabs can't get the same index.</div>
+        <div class="pipe-data">idx = claimNextDepositIndex() // reads counter, writes counter+1 in same call</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">2</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Derive Secret &amp; Nullifier <span class="tag tag-crypto">deterministic</span></div>
+        <div class="pipe-desc">Derived from master key + index. Same key + index always produces same note — enables recovery.</div>
+        <div class="pipe-data"><span class="field">secret</span>     = SHA256(masterKey + "secret" + idx)     mod BN254_R
+<span class="field">nullifier</span>  = SHA256(masterKey + "nullifier" + idx)  mod BN254_R</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">3</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Compute Commitment <span class="tag tag-crypto">MiMC hash</span></div>
+        <div class="pipe-desc">Commitment is what gets stored on-chain. It binds the note to a specific denomination.</div>
+        <div class="pipe-data"><span class="field">commitment</span> = <span class="op">MiMC</span>(<span class="val">secret</span>, <span class="val">nullifier</span>, <span class="val">denomination</span>)   <span class="comment">// 3-input MiMC sponge</span>
+<span class="comment">// commitment is public. secret + nullifier are private (only you know them).</span>
+<span class="comment">// To withdraw, you prove you know the secret+nullifier for some commitment in the tree.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>What each piece does</h3>
+  <div class="hflow">
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#7c5cfc;">Secret</div>
+      <div class="hf-content">Proves ownership. Only the depositor knows this value. Required in the ZK proof to spend.</div>
+    </div>
+    <div class="hflow-arrow">&rarr;</div>
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#fca05c;">Nullifier</div>
+      <div class="hf-content">Prevents double-spend. Hash is published when withdrawing. If it's already recorded, the spend is rejected.</div>
+    </div>
+    <div class="hflow-arrow">&rarr;</div>
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#00d4aa;">Commitment</div>
+      <div class="hf-content">Public ID of the deposit. Stored as a leaf in the Merkle tree. Doesn't reveal secret or nullifier.</div>
+    </div>
+    <div class="hflow-arrow">&rarr;</div>
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#fc5c7c;">Denomination</div>
+      <div class="hf-content">Baked into the commitment hash. Proves the amount without revealing which deposit you're spending.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- MERKLE TREE DEEP DIVE -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-merkle">
+  <h2>Layer 5 Deep Dive — Merkle Tree (On-chain State)</h2>
+
+  <p style="font-size:0.9rem;color:#aaa;margin-bottom:16px;">Each pool contract maintains a 20-level MiMC Merkle tree. Deposits add leaves. The root changes with every deposit. Roots are stored in a ring buffer (10,000 entries) so recent roots remain valid for in-flight withdrawals.</p>
+
+  <div class="tree-visual">
+    <div class="tree-row">
+      <div class="tree-node root">Root (stored on-chain)</div>
+    </div>
+    <div class="tree-lines">&sol; &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; &bsol;</div>
+    <div class="tree-row">
+      <div class="tree-node internal">H(L,R)</div>
+      <div class="tree-node internal">H(L,R)</div>
+    </div>
+    <div class="tree-lines">&sol; &bsol; &nbsp;&nbsp;&nbsp;&nbsp; &sol; &bsol;</div>
+    <div class="tree-row">
+      <div class="tree-node internal">H(L,R)</div>
+      <div class="tree-node internal">H(L,R)</div>
+      <div class="tree-node internal">H(L,R)</div>
+      <div class="tree-node internal">H(L,R)</div>
+    </div>
+    <div class="tree-lines" style="letter-spacing:1px;">&sol;&bsol; &nbsp; &sol;&bsol; &nbsp; &sol;&bsol; &nbsp; &sol;&bsol;</div>
+    <div class="tree-row">
+      <div class="tree-node leaf">C<sub>0</sub></div>
+      <div class="tree-node leaf">C<sub>1</sub></div>
+      <div class="tree-node leaf">C<sub>2</sub></div>
+      <div class="tree-node leaf">C<sub>3</sub></div>
+      <div class="tree-node leaf">C<sub>4</sub></div>
+      <div class="tree-node empty">0</div>
+      <div class="tree-node empty">0</div>
+      <div class="tree-node empty">0</div>
+    </div>
+    <div style="font-size:0.72rem;color:#555;margin-top:4px;">
+      C<sub>n</sub> = MiMC(secret, nullifier, denomination) &nbsp;&nbsp; | &nbsp;&nbsp; H(L,R) = MiMC(left, right) &nbsp;&nbsp; | &nbsp;&nbsp; 20 levels = 2<sup>20</sup> = 1,048,576 max deposits
+    </div>
+  </div>
+
+  <h3>On-chain box storage</h3>
+  <div class="hflow">
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#fca05c;">cmt{idx}</div>
+      <div class="hf-content">Commitment at leaf index. <code>"cmt" + uint64(idx)</code><br>One per deposit.</div>
+    </div>
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#7c5cfc;">root{slot}</div>
+      <div class="hf-content">Root at ring buffer slot. <code>"root" + uint64(slot%10000)</code><br>Stores recent roots.</div>
+    </div>
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#00d4aa;">kr{hash}</div>
+      <div class="hf-content">Known root lookup. <code>"kr" + root_hash</code><br>Fast O(1) root validation.</div>
+    </div>
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#fc5c5c;">null{hash}</div>
+      <div class="hf-content">Spent nullifier. <code>"null" + nullifier_hash</code><br>Prevents double-spend.</div>
+    </div>
+  </div>
+
+  <h3>What happens when you deposit</h3>
+  <div class="pipeline">
+    <div class="pipe-step">
+      <div class="pipe-num">1</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Contract receives commitment</div>
+        <div class="pipe-data">commitment = proof.publicSignals[0]  // from ZK proof</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">2</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Store in box at next_idx</div>
+        <div class="pipe-data">box["cmt" + next_idx] = commitment
+next_idx += 1</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">3</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Recompute Merkle root (contract-side)</div>
+        <div class="pipe-data">// Walk up 20 levels from the new leaf, recomputing parent hashes
+// Store new root in ring buffer slot and knownRoots lookup</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>What happens when you withdraw</h3>
+  <div class="pipeline">
+    <div class="pipe-step">
+      <div class="pipe-num">1</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Contract receives nullifier_hash + root</div>
+        <div class="pipe-data">nullifier_hash = proof.publicSignals[1]
+root = proof.publicSignals[2]</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">2</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Check nullifier not spent</div>
+        <div class="pipe-data">assert box["null" + nullifier_hash] does NOT exist  // double-spend check</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">3</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Check root is known</div>
+        <div class="pipe-data">assert box["kr" + root] EXISTS  // proves the commitment is in a valid tree state</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">4</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Record nullifier + send funds</div>
+        <div class="pipe-data">box["null" + nullifier_hash] = 1  // mark spent
+inner_txn: pay recipient denomination amount</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- ZK PROOF DEEP DIVE -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-zk">
+  <h2>Layer 3 Deep Dive — ZK Proof (What the Circuit Proves)</h2>
+
+  <h3>Deposit Circuit</h3>
+  <div class="data-box"><span class="comment">// Public inputs (visible on-chain)</span>
+<span class="field">commitment</span>        <span class="comment">// the leaf to add to the tree</span>
+<span class="field">denomination</span>      <span class="comment">// 100000, 500000, or 1000000 (microAlgos)</span>
+
+<span class="comment">// Private inputs (known only to prover)</span>
+<span class="field">secret</span>            <span class="comment">// random scalar</span>
+<span class="field">nullifier</span>         <span class="comment">// random scalar</span>
+
+<span class="comment">// Circuit constraint</span>
+<span class="op">assert</span> commitment == <span class="op">MiMC</span>(<span class="val">secret</span>, <span class="val">nullifier</span>, <span class="val">denomination</span>)
+<span class="comment">// Proves: "I know the preimage of this commitment, and it commits to this denomination"</span></div>
+
+  <h3>Withdraw Circuit</h3>
+  <div class="data-box"><span class="comment">// Public inputs</span>
+<span class="field">nullifier_hash</span>    <span class="comment">// MiMC(nullifier) — recorded on-chain to prevent reuse</span>
+<span class="field">root</span>              <span class="comment">// current Merkle root — proves commitment is in the tree</span>
+<span class="field">recipient</span>         <span class="comment">// who gets the ALGO (prevents front-running)</span>
+<span class="field">denomination</span>      <span class="comment">// amount to withdraw</span>
+
+<span class="comment">// Private inputs</span>
+<span class="field">secret</span>            <span class="comment">// the depositor's secret</span>
+<span class="field">nullifier</span>         <span class="comment">// the depositor's nullifier</span>
+<span class="field">pathElements[20]</span>  <span class="comment">// Merkle proof (sibling hashes at each level)</span>
+<span class="field">pathIndices[20]</span>   <span class="comment">// left/right at each level (0 or 1)</span>
+
+<span class="comment">// Circuit constraints</span>
+<span class="op">assert</span> nullifier_hash == <span class="op">MiMC</span>(<span class="val">nullifier</span>)
+commitment = <span class="op">MiMC</span>(<span class="val">secret</span>, <span class="val">nullifier</span>, <span class="val">denomination</span>)
+<span class="op">assert</span> <span class="op">MerkleProof</span>(commitment, pathElements, pathIndices) == <span class="val">root</span>
+<span class="comment">// Proves: "I know a secret+nullifier for SOME commitment in this tree"</span>
+<span class="comment">// WITHOUT revealing WHICH commitment. That's the privacy.</span></div>
+
+  <h3>How the proof gets verified on Algorand</h3>
+  <div class="hflow">
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#fca05c;">Browser</div>
+      <div class="hf-content">snarkjs generates PLONK proof (π) from circuit WASM + zkey</div>
+    </div>
+    <div class="hflow-arrow">&rarr;</div>
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#fc5c7c;">Encode</div>
+      <div class="hf-content">Proof encoded into 4 LogicSig program args (AVM budget: 20k opcodes each = 80k total)</div>
+    </div>
+    <div class="hflow-arrow">&rarr;</div>
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#7c5cfc;">LogicSig x4</div>
+      <div class="hf-content">TEAL program runs PLONK verification math. If proof invalid → txn rejected.</div>
+    </div>
+    <div class="hflow-arrow">&rarr;</div>
+    <div class="hflow-box">
+      <div class="hf-label" style="color:#00d4aa;">Pool Contract</div>
+      <div class="hf-content">Checks LogicSig address matches known verifier. Trusts the proof passed. Updates state.</div>
+    </div>
+  </div>
+
+  <div class="note">Why 4 LogicSigs? PLONK verification requires ~70,000 AVM opcodes. Each LogicSig gets 20,000 budget. So the verification is split across 4 transactions in an atomic group. The pool contract checks that all 4 LogicSig addresses match the deterministic PLONK verifier address.</div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- RELAYER DEEP DIVE -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-relayer">
+  <h2>Layer 7 Deep Dive — Relayer Network</h2>
+
+  <h3>Why relayers exist</h3>
+  <p style="font-size:0.88rem;color:#aaa;margin-bottom:16px;">Without a relayer, the <em>recipient</em> wallet submits the withdrawal transaction. An observer sees: "address X received funds from the privacy pool." If X is your known address, your deposit is linked. The relayer breaks this link by submitting the transaction on your behalf.</p>
+
+  <h3>What the relayer sees vs. doesn't see</h3>
+  <div class="hflow">
+    <div class="hflow-box" style="border-color:#fc5c5c44;">
+      <div class="hf-label" style="color:#fc5c5c;">Relayer SEES</div>
+      <div class="hf-content" style="text-align:left;">
+        &bull; ZK proof bytes<br>
+        &bull; Recipient address<br>
+        &bull; Denomination amount<br>
+        &bull; Nullifier hash<br>
+        &bull; Your IP address
+      </div>
+    </div>
+    <div class="hflow-box" style="border-color:#00d4aa44;">
+      <div class="hf-label" style="color:#00d4aa;">Relayer CANNOT see</div>
+      <div class="hf-content" style="text-align:left;">
+        &bull; Your secret (in ZK proof)<br>
+        &bull; Your nullifier preimage<br>
+        &bull; Which commitment is yours<br>
+        &bull; Your deposit transaction<br>
+        &bull; Your wallet address
+      </div>
+    </div>
+  </div>
+
+  <h3>Withdrawal via relayer — step by step</h3>
+  <div class="pipeline">
+    <div class="pipe-step">
+      <div class="pipe-num">1</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Frontend picks random relayer <span class="tag tag-net">network</span></div>
+        <div class="pipe-data">relayer = RELAYERS[Math.floor(Math.random() * 2)]
+// Relayer 1: privacy-pool-relayer.mitchhall16.workers.dev
+// Relayer 2: privacy-pool-relayer-2.mitchhall16.workers.dev</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">2</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Random jitter delay <span class="tag tag-crypto">timing</span></div>
+        <div class="pipe-data">await sleep(random(5000, 30000))  // 5-30 second random delay</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">3</div>
+      <div class="pipe-content">
+        <div class="pipe-title">POST proof to relayer <span class="tag tag-net">network</span></div>
+        <div class="pipe-data">POST /withdraw { proof, publicSignals, recipient, poolAppId }</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">4</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Relayer builds &amp; submits txn <span class="tag tag-chain">on-chain</span></div>
+        <div class="pipe-desc">Relayer constructs the atomic group (4 LogicSig + pool call), signs with its own key, submits to Algorand. Deducts 0.05 ALGO fee from withdrawal amount.</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">5</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Relayer returns txId <span class="tag tag-net">network</span></div>
+        <div class="pipe-data">{ txId: "ABCD1234...", status: "confirmed" }</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- FULL DEPOSIT FLOW -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-deposit">
+  <h2>Full Deposit Flow — All Layers</h2>
+
+  <div class="layer-stack">
+    <div class="layer l-ui">
+      <span class="layer-label">UI</span>
+      <div class="layer-title">1. User Action</div>
+      <div class="layer-detail">Select tier (0.1/0.5/1.0) → Enter password → Click "Deposit"</div>
+    </div>
+    <div class="layer l-crypto">
+      <span class="layer-label">Crypto</span>
+      <div class="layer-title">2. Key Derivation</div>
+      <div class="layer-detail"><code>masterKey = PBKDF2(walletSign("2birds...") + password)</code> → <code>note = deriveDeposit(masterKey, claimNextDepositIndex(), tier)</code> → produces secret, nullifier, commitment</div>
+    </div>
+    <div class="layer l-ui">
+      <span class="layer-label">Timing</span>
+      <div class="layer-title">3. Batch Window</div>
+      <div class="layer-detail">Wait until next 15-minute mark (:00/:15/:30/:45). Multiple deposits from different users land in the same window → harder to correlate.</div>
+    </div>
+    <div class="layer l-zk">
+      <span class="layer-label">ZK</span>
+      <div class="layer-title">4. Proof Generation</div>
+      <div class="layer-detail">Download 131 MB PLONK zkey (cached after first download). <code>snarkjs.plonk.fullProve(input, wasm, zkey)</code> → proof π + public signals [commitment, denomination]</div>
+    </div>
+    <div class="layer l-txn">
+      <span class="layer-label">Transaction</span>
+      <div class="layer-title">5. Build Atomic Group</div>
+      <div class="layer-detail">
+        <strong>6 transactions in atomic group:</strong><br>
+        [0-3] 4× LogicSig txns — PLONK proof verification (each carries part of the proof in args)<br>
+        [4] Payment txn — User sends denomination ALGO to pool contract address<br>
+        [5] App call — Pool contract <code>deposit(commitment)</code> method
+      </div>
+    </div>
+    <div class="layer l-ui">
+      <span class="layer-label">Wallet</span>
+      <div class="layer-title">6. Wallet Signing</div>
+      <div class="layer-detail">Pera/Defly/Lute signs txns [4,5] (payment + app call). LogicSig txns [0-3] are self-signed by the compiled PLONK verifier program. 90-second timeout if wallet doesn't respond.</div>
+    </div>
+    <div class="layer l-chain">
+      <span class="layer-label">On-chain</span>
+      <div class="layer-title">7. Contract Execution</div>
+      <div class="layer-detail">
+        Pool contract checks:<br>
+        &bull; LogicSig addresses [0-3] match known PLONK verifier → proof is valid<br>
+        &bull; Payment amount == expected denomination<br>
+        &bull; Stores commitment at <code>box["cmt" + next_idx]</code><br>
+        &bull; Recomputes Merkle root up 20 levels<br>
+        &bull; Stores new root in ring buffer <code>box["root" + (next_idx % 10000)]</code> and <code>box["kr" + root]</code><br>
+        &bull; Increments <code>next_idx</code>
+      </div>
+    </div>
+    <div class="layer l-storage">
+      <span class="layer-label">Storage</span>
+      <div class="layer-title">8. Persist Note</div>
+      <div class="layer-detail"><code>saveNote({secret, nullifier, commitment, denomination, leafIndex, appId})</code> → AES-GCM encrypted in localStorage with ephemeral per-tab key from sessionStorage</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- FULL WITHDRAW FLOW -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-withdraw">
+  <h2>Full Withdraw Flow — All Layers</h2>
+
+  <div class="layer-stack">
+    <div class="layer l-ui">
+      <span class="layer-label">UI</span>
+      <div class="layer-title">1. User Action</div>
+      <div class="layer-detail">Select note to withdraw → Enter recipient address → Click "Withdraw"</div>
+    </div>
+    <div class="layer l-chain">
+      <span class="layer-label">Guard</span>
+      <div class="layer-title">2. Privacy Checks</div>
+      <div class="layer-detail">
+        <code>checkPoolSize()</code>: pool must have &ge;5 deposits (anonymity set)<br>
+        <code>checkCooldown()</code>: 2 min since last operation<br>
+        <code>checkCluster()</code>: warn if 3+ ops this session
+      </div>
+    </div>
+    <div class="layer l-chain">
+      <span class="layer-label">Sync</span>
+      <div class="layer-title">3. Rebuild Merkle Tree</div>
+      <div class="layer-detail">Fetch all <code>box["cmt" + 0..n]</code> from pool contract via algod API. Rebuild 20-level MiMC tree locally. Cache in memory (invalidated on stale root error).</div>
+    </div>
+    <div class="layer l-crypto">
+      <span class="layer-label">Crypto</span>
+      <div class="layer-title">4. Compute Merkle Proof</div>
+      <div class="layer-detail">Find note's leaf index in tree → extract 20 sibling hashes (pathElements) and 20 left/right indicators (pathIndices). Compute <code>nullifierHash = MiMC(nullifier)</code>.</div>
+    </div>
+    <div class="layer l-zk">
+      <span class="layer-label">ZK</span>
+      <div class="layer-title">5. Generate Withdraw Proof</div>
+      <div class="layer-detail">
+        Private inputs: secret, nullifier, pathElements[20], pathIndices[20]<br>
+        Public outputs: nullifierHash, root, recipient, denomination<br>
+        Proves: "I know the preimage of a commitment in this tree" without revealing which one.
+      </div>
+    </div>
+    <div class="layer l-ui">
+      <span class="layer-label">Timing</span>
+      <div class="layer-title">6. Random Jitter</div>
+      <div class="layer-detail"><code>await sleep(random(5000, 30000))</code> — prevents timing correlation between deposit and withdrawal</div>
+    </div>
+    <div class="layer l-network">
+      <span class="layer-label">Network</span>
+      <div class="layer-title">7. Submit via Relayer</div>
+      <div class="layer-detail">
+        Randomly pick 1 of 2 relayers → POST proof + recipient<br>
+        Relayer builds atomic group (4 LogicSig + pool call) → signs with relayer key → submits to Algorand<br>
+        Relayer deducts 0.05 ALGO fee
+      </div>
+    </div>
+    <div class="layer l-chain">
+      <span class="layer-label">On-chain</span>
+      <div class="layer-title">8. Contract Execution</div>
+      <div class="layer-detail">
+        &bull; Verify LogicSig addresses match withdraw PLONK verifier<br>
+        &bull; Check <code>box["null" + nullifierHash]</code> does NOT exist (double-spend check)<br>
+        &bull; Check <code>box["kr" + root]</code> EXISTS (valid tree state)<br>
+        &bull; Store <code>box["null" + nullifierHash] = 1</code><br>
+        &bull; Inner txn: send denomination ALGO to recipient
+      </div>
+    </div>
+    <div class="layer l-storage">
+      <span class="layer-label">Storage</span>
+      <div class="layer-title">9. Remove Spent Note</div>
+      <div class="layer-detail"><code>removeNoteByCommitment(note.commitment)</code> — note is permanently spent</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- PRIVATE SEND FLOW -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-send">
+  <h2>Full Private Send Flow — All Layers</h2>
+
+  <div class="layer-stack">
+    <div class="layer l-ui">
+      <span class="layer-label">UI</span>
+      <div class="layer-title">1. Enter Privacy Address</div>
+      <div class="layer-detail">Recipient shares <code>ALGO_ADDRESS:HPKE_VIEW_PUBKEY</code>. The view key is a separate x25519 keypair derived from wallet signature.</div>
+    </div>
+    <div class="layer l-crypto">
+      <span class="layer-label">Crypto</span>
+      <div class="layer-title">2. Derive New Note for Recipient</div>
+      <div class="layer-detail">Sender creates a fresh note (random secret + nullifier, NOT from sender's master key). Note is meant for the recipient to later withdraw.</div>
+    </div>
+    <div class="layer l-crypto">
+      <span class="layer-label">HPKE</span>
+      <div class="layer-title">3. Encrypt Note with Recipient's View Key</div>
+      <div class="layer-detail"><code>encryptedNote = HPKE.seal(recipientViewPubkey, JSON.stringify({secret, nullifier, denomination}))</code><br>Only the recipient can decrypt this with their view private key.</div>
+    </div>
+    <div class="layer l-zk">
+      <span class="layer-label">ZK</span>
+      <div class="layer-title">4. Generate Private Send Proof</div>
+      <div class="layer-detail">Single proof covers: deposit of new commitment + binding to recipient address. Public signals include the new commitment and the recipient's Algorand address.</div>
+    </div>
+    <div class="layer l-txn">
+      <span class="layer-label">Transaction</span>
+      <div class="layer-title">5. Build Atomic Group</div>
+      <div class="layer-detail">[0-3] 4× LogicSig (PLONK verify) + [4] Payment (denomination ALGO) + [5] App call with encrypted note in txn note field</div>
+    </div>
+    <div class="layer l-chain">
+      <span class="layer-label">On-chain</span>
+      <div class="layer-title">6. Contract Stores Commitment</div>
+      <div class="layer-detail">Same as deposit — commitment added to Merkle tree. The encrypted note is in the transaction's note field (on-chain, but only decryptable by recipient).</div>
+    </div>
+    <div class="layer l-crypto">
+      <span class="layer-label">Recipient</span>
+      <div class="layer-title">7. Recipient Scans &amp; Decrypts</div>
+      <div class="layer-detail">
+        Recipient's client scans pool transactions → tries <code>HPKE.open(viewPrivateKey, txn.note)</code> on each<br>
+        If decryption succeeds → note is theirs → save it → can withdraw later
+      </div>
+    </div>
+  </div>
+
+  <div class="note">The sender's identity is never linked to the recipient's. The on-chain transaction shows: "someone deposited into the pool with an encrypted note." Only the recipient can read it.</div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- SPLIT FLOW -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-split">
+  <h2>Split Flow — 1.0 ALGO &rarr; 2&times;0.5 ALGO</h2>
+
+  <div class="pool-diagram">
+    <div class="pool-box">
+      <div class="pool-label">Source Pool (1.0)</div>
+      <div class="pool-note"><span class="dot spent"></span> Original note <small style="color:#fc5c5c;">(spent)</small></div>
+    </div>
+    <div class="pool-arrow-wrap">
+      <div>&xrarr; Step 1: Withdraw</div>
+      <div style="margin:6px 0;color:#333;">wallet holds 1.0 ALGO</div>
+      <div>Steps 2-3: Deposit &times;2 &xrarr;</div>
+    </div>
+    <div class="pool-box">
+      <div class="pool-label">Dest Pool (0.5)</div>
+      <div class="pool-note"><span class="dot new"></span> Note 1 <small style="color:#7c5cfc;">(0.5)</small></div>
+      <div class="pool-note"><span class="dot new"></span> Note 2 <small style="color:#7c5cfc;">(0.5)</small></div>
+    </div>
+  </div>
+
+  <div class="layer-stack">
+    <div class="layer l-chain">
+      <span class="layer-label">Step 1</span>
+      <div class="layer-title">Withdraw 1.0 ALGO from source pool to own wallet</div>
+      <div class="layer-detail">Full withdraw flow (proof + relayer + nullifier recorded). Funds land in user's wallet. <strong>Checkpoint saved: step=1</strong></div>
+    </div>
+    <div class="layer l-chain">
+      <span class="layer-label">Step 2</span>
+      <div class="layer-title">Deposit 0.5 ALGO into destination pool (note #1)</div>
+      <div class="layer-detail">Full deposit flow (proof + payment + Merkle update). Retries up to 3× on stale root. <strong>Checkpoint saved: step=2</strong></div>
+    </div>
+    <div class="layer l-chain">
+      <span class="layer-label">Step 3</span>
+      <div class="layer-title">Deposit 0.5 ALGO into destination pool (note #2)</div>
+      <div class="layer-detail">Second deposit with fresh note. On success: checkpoint cleared, 2 new notes saved.</div>
+    </div>
+  </div>
+
+  <div class="recovery">
+    <strong>Checkpoint recovery on failure</strong>
+    <ul>
+      <li>Fails at step 2 → "1.0 ALGO was withdrawn to your wallet. Re-deposit manually or retry."</li>
+      <li>Fails at step 3 → "1.0 withdrawn, 0.5 deposited. Re-deposit remaining 0.5 ALGO manually."</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- COMBINE FLOW -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-combine">
+  <h2>Combine Flow — 2&times;0.5 ALGO &rarr; 1.0 ALGO</h2>
+
+  <div class="pool-diagram">
+    <div class="pool-box">
+      <div class="pool-label">Source Pool (0.5)</div>
+      <div class="pool-note"><span class="dot spent"></span> Note 1 <small style="color:#fc5c5c;">(spent)</small></div>
+      <div class="pool-note"><span class="dot spent"></span> Note 2 <small style="color:#fc5c5c;">(spent)</small></div>
+    </div>
+    <div class="pool-arrow-wrap">
+      <div>&xrarr; Steps 1-2: Withdraw &times;2</div>
+      <div style="margin:6px 0;color:#333;">wallet holds 1.0 ALGO</div>
+      <div>Step 3: Deposit &xrarr;</div>
+    </div>
+    <div class="pool-box">
+      <div class="pool-label">Dest Pool (1.0)</div>
+      <div class="pool-note"><span class="dot new"></span> Combined note <small style="color:#7c5cfc;">(1.0)</small></div>
+    </div>
+  </div>
+
+  <div class="layer-stack">
+    <div class="layer l-chain">
+      <span class="layer-label">Step 1</span>
+      <div class="layer-title">Withdraw note 1 (0.5 ALGO) to own wallet</div>
+      <div class="layer-detail">Full withdraw flow. <strong>Checkpoint: step=1</strong></div>
+    </div>
+    <div class="layer l-chain">
+      <span class="layer-label">Step 2</span>
+      <div class="layer-title">Withdraw note 2 (0.5 ALGO) to own wallet</div>
+      <div class="layer-detail">Full withdraw flow. <strong>Checkpoint: step=2</strong></div>
+    </div>
+    <div class="layer l-chain">
+      <span class="layer-label">Step 3</span>
+      <div class="layer-title">Deposit 1.0 ALGO into destination pool</div>
+      <div class="layer-detail">Full deposit flow. On success: checkpoint cleared, 1 new note saved.</div>
+    </div>
+  </div>
+
+  <div class="recovery">
+    <strong>Checkpoint recovery on failure</strong>
+    <ul>
+      <li>Fails at step 2 → "0.5 ALGO withdrawn to wallet. Second note still in pool."</li>
+      <li>Fails at step 3 → "2×0.5 ALGO withdrawn to wallet. Re-deposit 1.0 manually."</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- NOTE STORAGE DEEP DIVE -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-keys">
+  <h2>Layer 6 Deep Dive — Note Storage &amp; Backup</h2>
+
+  <h3>In-browser storage (localStorage + sessionStorage)</h3>
+  <div class="pipeline">
+    <div class="pipe-step">
+      <div class="pipe-num">1</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Tab opens → generate ephemeral AES key</div>
+        <div class="pipe-data">tabKey = crypto.getRandomValues(32 bytes)
+sessionStorage["privacy_tab_key"] = tabKey  // dies when tab closes</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">2</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Save note → encrypt with tab key</div>
+        <div class="pipe-data">ciphertext = AES-GCM(tabKey, JSON.stringify(notes))
+localStorage["privacy_notes_{wallet}"] = ciphertext</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">3</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Load notes → decrypt with tab key</div>
+        <div class="pipe-data">plaintext = AES-GCM-decrypt(tabKey, localStorage["privacy_notes_{wallet}"])
+notes = JSON.parse(plaintext)</div>
+      </div>
+    </div>
+  </div>
+  <div class="note">If another tab or XSS script reads localStorage, they get encrypted gibberish. The decryption key only exists in sessionStorage of the original tab. But if XSS runs IN the same tab, it can still access sessionStorage.</div>
+
+  <h3>Backup export/import (AES-256-GCM + PBKDF2)</h3>
+  <div class="pipeline">
+    <div class="pipe-step">
+      <div class="pipe-num">E</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Export</div>
+        <div class="pipe-data">salt = random(16 bytes)
+iv = random(12 bytes)
+key = PBKDF2(password, salt, 100000 iterations, SHA-256) → AES-256 key
+ciphertext = AES-GCM(key, iv, JSON.stringify(notes))
+output = base64(salt + iv + ciphertext) → .enc file</div>
+      </div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">I</div>
+      <div class="pipe-content">
+        <div class="pipe-title">Import</div>
+        <div class="pipe-data">parse base64 → extract salt(16) + iv(12) + ciphertext
+key = PBKDF2(password, salt, 100000, SHA-256)
+plaintext = AES-GCM-decrypt(key, iv, ciphertext)  // wrong password → throws
+notes = JSON.parse(plaintext)
+→ merge with existing notes (skip duplicates by commitment)
+→ validate each against chain: isNoteSpent() → remove spent ones</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ -->
+<!-- SECURITY OVERVIEW -->
+<!-- ══════════════════════════════════════════ -->
+<div class="section s-security">
+  <h2>Security Layers — Full Overview</h2>
+
+  <div class="sec-grid">
+    <div class="sec-card sc-t">
+      <h4>Timing Protection</h4>
+      <ul>
+        <li>Batch windows — deposits snap to 15-min marks</li>
+        <li>Operation cooldown — 2 min between ops</li>
+        <li>Withdrawal jitter — 5-30s random delay</li>
+        <li>Cluster warning — alert at 3+ ops/session</li>
+      </ul>
+    </div>
+    <div class="sec-card sc-c">
+      <h4>On-chain Verification</h4>
+      <ul>
+        <li>PLONK ZK proofs via LogicSig (4 txns)</li>
+        <li>Nullifier box prevents double-spend</li>
+        <li>Known root ring buffer (10,000 entries)</li>
+        <li>Pool min 5 deposits for privacy</li>
+        <li>Fixed denomination tiers only</li>
+      </ul>
+    </div>
+    <div class="sec-card sc-k">
+      <h4>Key &amp; Note Security</h4>
+      <ul>
+        <li>Master key = PBKDF2(wallet_sig + password)</li>
+        <li>Notes AES-GCM encrypted per-tab</li>
+        <li>Backups AES-256-GCM + PBKDF2 100k</li>
+        <li>Deterministic recovery via master key</li>
+        <li>Atomic deposit index (no tab races)</li>
+      </ul>
+    </div>
+    <div class="sec-card sc-n">
+      <h4>Network Privacy</h4>
+      <ul>
+        <li>2 relayers — random selection per op</li>
+        <li>Relayer never sees note secrets</li>
+        <li>HPKE encrypted notes (private send)</li>
+        <li>CSP headers block unauthorized scripts</li>
+        <li>SRI hashes on all bundled scripts</li>
+      </ul>
+    </div>
+    <div class="sec-card sc-a">
+      <h4>Atomicity &amp; Recovery</h4>
+      <ul>
+        <li>Split/combine checkpoint recovery</li>
+        <li>Stale root auto-retry (3 attempts)</li>
+        <li>Imported notes validated vs chain</li>
+        <li>Wallet signing timeout (90s)</li>
+        <li>Error visibility (toast, not hidden modal)</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="cost-bar">
+    <div class="cost-item cost-green">
+      <div class="cost-label">PLONK LogicSig (current)</div>
+      <div class="cost-val">0.007 <small style="font-size:0.6em;">ALGO</small></div>
+      <div class="cost-sub">4 LogicSig txns per proof</div>
+    </div>
+    <div class="cost-item cost-red">
+      <div class="cost-label">Groth16 App Calls (legacy)</div>
+      <div class="cost-val">0.206 <small style="font-size:0.6em;">ALGO</small></div>
+      <div class="cost-sub">200+ budget increase calls</div>
+    </div>
+  </div>
+  <p style="text-align:center;color:#555;font-size:0.8rem;margin-top:10px;">PLONK LogicSig is ~30&times; cheaper than Groth16 app-based verification</p>
+</div>
+
+<p style="text-align:center;color:#333;font-size:0.78rem;margin-top:48px;padding-bottom:20px;">2birds Privacy SDK &mdash; Zero-knowledge privacy pools on Algorand</p>
+
+</div>
+</body>
+</html>

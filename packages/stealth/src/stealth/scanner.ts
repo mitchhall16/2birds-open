@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/stealth — Background Scanner
+ * @2birds/stealth — Background Scanner
  *
  * Continuously scans the stealth registry for announcements
  * addressed to the recipient. Uses view tags for fast filtering.
@@ -16,7 +16,7 @@ import {
   ecAdd,
   BN254_G,
   sleep,
-} from '@algo-privacy/core';
+} from '@2birds/core';
 import { checkStealthAddress, stealthPubKeyToAddress } from './keys.js';
 import { StealthRegistry, type RegistryConfig } from './registry.js';
 

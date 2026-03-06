@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * @algo-privacy/cli — Command-line tool for Algorand privacy operations
+ * @2birds/cli — Command-line tool for Algorand privacy operations
  *
  * Usage:
  *   algo-privacy stealth keygen              Generate stealth keypair

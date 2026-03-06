@@ -1,5 +1,5 @@
 {
-  "name": "@algo-privacy/pool",
+  "name": "@2birds/pool",
   "version": "0.1.0",
   "description": "Privacy pool (mixer) for Algorand — break on-chain links between sender and receiver",
   "main": "dist/index.js",
@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@algo-privacy/core": "*",
+    "@2birds/core": "*",
     "algosdk": "^3.0.0",
     "snarkjs": "^0.7.0"
   }

@@ -1,5 +1,5 @@
 {
-  "name": "@algo-privacy/core",
+  "name": "@2birds/core",
   "version": "0.1.0",
   "description": "Core cryptographic primitives for Algorand privacy SDK",
   "main": "dist/index.js",

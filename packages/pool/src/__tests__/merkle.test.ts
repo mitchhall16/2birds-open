@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { IncrementalMerkleTree } from '../index.js';
-import { initMimc, mimcHash, randomScalar } from '@algo-privacy/core';
+import { initMimc, mimcHash, randomScalar } from '@2birds/core';
 
 describe('Incremental Merkle Tree', () => {
   beforeAll(async () => {

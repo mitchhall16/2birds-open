@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/core — Utility functions
+ * @2birds/core — Utility functions
  */
 
 import algosdk from 'algosdk';

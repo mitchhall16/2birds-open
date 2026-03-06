@@ -14,7 +14,7 @@ import {
   mimcHashMulti,
   mimcHash,
   initMimc,
-} from '@algo-privacy/core';
+} from '@2birds/core';
 
 beforeAll(async () => {
   await initMimc();

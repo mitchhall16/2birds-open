@@ -8,7 +8,7 @@ import {
   encodeMetaAddress,
   decodeMetaAddress,
 } from '../index.js';
-import { derivePubKey, isOnCurve } from '@algo-privacy/core';
+import { derivePubKey, isOnCurve } from '@2birds/core';
 
 describe('Stealth address protocol', () => {
   describe('Key generation', () => {

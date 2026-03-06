@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import algosdk from 'algosdk';
-import type { NetworkConfig } from '@algo-privacy/core';
+import type { NetworkConfig } from '@2birds/core';
 
 /** Default config directory */
 const CONFIG_DIR = path.join(os.homedir(), '.algo-privacy');

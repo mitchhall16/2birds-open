@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/confidential — Confidential Transfer Flow
+ * @2birds/confidential — Confidential Transfer Flow
  *
  * Orchestrates shielding (deposit), confidential transfers, and unshielding (withdrawal)
  * with hidden amounts using Pedersen commitments and range proofs.
@@ -15,7 +15,7 @@ import {
   scalarToBytes,
   createAlgodClient,
   encodePoint,
-} from '@algo-privacy/core';
+} from '@2birds/core';
 import { commit, subtractCommitments, verifyBalance, encodeCommitment } from './pedersen.js';
 
 // snarkjs loaded dynamically

@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/stealth — Key generation and stealth address derivation
+ * @2birds/stealth — Key generation and stealth address derivation
  *
  * Implements ERC-5564-style stealth addresses adapted for Algorand using BN254 curve.
  *
@@ -31,7 +31,7 @@ import {
   encodePoint,
   bigintToBytes32,
   bytes32ToBigint,
-} from '@algo-privacy/core';
+} from '@2birds/core';
 
 /** Generate a new stealth keypair (spending + viewing) */
 export function generateStealthKeys(): StealthKeys & { metaAddress: StealthMetaAddress } {

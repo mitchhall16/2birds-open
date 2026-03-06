@@ -1,5 +1,5 @@
 /**
- * @algo-privacy/shielded — Shielded Wallet
+ * @2birds/shielded — Shielded Wallet
  *
  * Manages the user's shielded notes (UTXOs), tracks balances,
  * selects notes for spending, and synchronizes with on-chain state.
@@ -13,8 +13,8 @@ import {
   randomScalar,
   derivePubKey,
   createAlgodClient,
-} from '@algo-privacy/core';
-import { IncrementalMerkleTree } from '@algo-privacy/pool';
+} from '@2birds/core';
+import { IncrementalMerkleTree } from '@2birds/pool';
 import {
   createNote,
   serializeShieldedNote,
