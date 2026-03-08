@@ -8,9 +8,27 @@ Private transactions on Algorand. Deposit ALGO, withdraw to any address — nobo
 
 ## What is this?
 
-2birds is a privacy pool. You deposit ALGO into a shared pool with other users, and later withdraw the same amount to a completely different address. A zero-knowledge proof guarantees you deposited without revealing *which* deposit is yours.
+2birds is a privacy pool for Algorand. You deposit ALGO into a shared pool with other users, and later withdraw the same amount to a completely different address. A zero-knowledge proof guarantees you deposited without revealing *which* deposit is yours.
 
 Think of it like putting cash into a shared jar, getting a receipt, and later redeeming that receipt at a different window. Nobody watching the jar can connect your deposit to your withdrawal.
+
+### The privacy trade-off
+
+On a normal blockchain, every transaction is public. Anyone can trace where your ALGO came from and where it went. 2birds breaks that link — but **how private you are depends on how you use it**.
+
+You *can* deposit and withdraw immediately. Nothing stops you. But if you deposit 1 ALGO and 30 seconds later someone withdraws 1 ALGO, it doesn't take a genius to connect those two. The whole point of a privacy pool is that you're hiding in a crowd — and if there's no crowd yet, you're not hiding.
+
+**What makes your privacy stronger:**
+- **More deposits in the pool** — If 50 people deposited before you withdraw, you're one of 50. If 3 people deposited, you're one of 3.
+- **Waiting longer** — The more time between your deposit and withdrawal, the harder it is to correlate them by timing.
+- **Using the relayer** — Withdrawals go through a relayer so your wallet never touches the withdraw transaction. Without this, someone could link your deposit and withdrawal by IP address or wallet activity.
+
+**What can weaken your privacy:**
+- **Withdrawing too fast** — Depositing and withdrawing in the same session is technically possible but gives you almost no privacy.
+- **Small pool size** — If very few people are using the pool, the anonymity set is small. This is a bootstrapping problem every privacy pool faces.
+- **Pattern repetition** — Depositing and withdrawing the same amounts at regular intervals can make you statistically identifiable even in a large pool.
+
+2birds has built-in protections against most of these (batch windows, cooldown timers, jitter, soak time requirements), but no tool can protect you from using it carelessly. Privacy is a spectrum, not a switch.
 
 ### How to use it
 
@@ -18,8 +36,8 @@ Think of it like putting cash into a shared jar, getting a receipt, and later re
 2. Get free testnet ALGO from the [dispenser](https://bank.testnet.algorand.network/)
 3. Go to [2birds.pages.dev](https://2birds.pages.dev) and connect your wallet
 4. Pick a pool tier (0.1, 0.5, or 1.0 ALGO) and deposit
-5. Wait for a few other people to deposit
-6. Withdraw to any address you want — it's private
+5. Wait for other people to deposit (the longer you wait, the better your privacy)
+6. Withdraw to any address you want — the relayer submits the transaction so it can't be linked back to you
 
 ### What does it cost?
 
@@ -28,11 +46,13 @@ Think of it like putting cash into a shared jar, getting a receipt, and later re
 | Deposit | Pool amount + 0.057 ALGO fee |
 | Withdraw | 0.05 ALGO (taken from your withdrawal) |
 
-That's it. No subscriptions, no tokens, no hidden fees. The infrastructure runs on Cloudflare's free tier — **$0/month**.
+No subscriptions, no tokens, no hidden fees. The infrastructure runs on Cloudflare's free tier — **$0/month**.
 
 ### How private is it?
 
 Your privacy depends on the **anonymity set** — how many people your transaction hides among. If 100 people deposit 1 ALGO and you withdraw, an observer knows you're one of those 100, but not which one. If only 2 people deposited, you're one of 2. More users = better privacy. This is true for every privacy pool, not just 2birds.
+
+The app shows your current anonymity set size so you can make an informed decision about when to withdraw.
 
 ---
 
