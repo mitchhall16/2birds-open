@@ -220,8 +220,8 @@
 }
 
 .app-layout__left {
-  width: 440px;
-  min-width: 440px;
+  width: 520px;
+  min-width: 520px;
   padding: 24px 24px 24px 32px;
   overflow-y: auto;
   max-height: calc(100vh - 65px);
@@ -412,12 +412,11 @@
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 24px;
+  padding: 20px;
   overflow-x: hidden;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  min-height: 420px;
   max-height: calc(100vh - 110px);
 }
 
@@ -436,13 +435,13 @@
 
 .tx-tab-bar {
   display: flex;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   border-bottom: 1px solid var(--border);
 }
 
 .tx-tab {
   flex: 1;
-  padding: 10px 0;
+  padding: 8px 0;
   font-family: var(--font-body);
   font-weight: 600;
   font-size: 14px;
