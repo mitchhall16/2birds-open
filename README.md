@@ -14,21 +14,17 @@ Think of it like putting cash into a shared jar, getting a receipt, and later re
 
 ### The privacy trade-off
 
-On a normal blockchain, every transaction is public. Anyone can trace where your ALGO came from and where it went. 2birds breaks that link — but **how private you are depends on how you use it**.
+Blockchain transactions are public by default — anyone can trace where your ALGO went. 2birds breaks that link, but **your privacy depends on how you use it**.
 
-You *can* deposit and withdraw immediately. Nothing stops you. But if you deposit 1 ALGO and 30 seconds later someone withdraws 1 ALGO, it doesn't take a genius to connect those two. The whole point of a privacy pool is that you're hiding in a crowd — and if there's no crowd yet, you're not hiding.
+You *can* withdraw immediately after depositing, but if only one person deposited recently, it's obvious who withdrew. You're hiding in a crowd — the bigger the crowd, the better the privacy. This is called the **anonymity set**.
 
-**What makes your privacy stronger:**
-- **More deposits in the pool** — If 50 people deposited before you withdraw, you're one of 50. If 3 people deposited, you're one of 3.
-- **Waiting longer** — The more time between your deposit and withdrawal, the harder it is to correlate them by timing.
-- **Using the relayer** — Withdrawals go through a relayer so your wallet never touches the withdraw transaction. Without this, someone could link your deposit and withdrawal by IP address or wallet activity.
+| Stronger privacy | Weaker privacy |
+|---|---|
+| More deposits in the pool before you withdraw | Withdrawing right after depositing |
+| Waiting longer between deposit and withdrawal | Small pool with few users |
+| Using the relayer (your wallet never touches the withdraw tx) | Repeating the same pattern (same amounts, regular timing) |
 
-**What can weaken your privacy:**
-- **Withdrawing too fast** — Depositing and withdrawing in the same session is technically possible but gives you almost no privacy.
-- **Small pool size** — If very few people are using the pool, the anonymity set is small. This is a bootstrapping problem every privacy pool faces.
-- **Pattern repetition** — Depositing and withdrawing the same amounts at regular intervals can make you statistically identifiable even in a large pool.
-
-2birds has built-in protections against most of these (batch windows, cooldown timers, jitter, soak time requirements), but no tool can protect you from using it carelessly. Privacy is a spectrum, not a switch.
+2birds has built-in protections (batch windows, cooldown timers, jitter, soak time) but privacy is a spectrum, not a switch.
 
 ### How to use it
 
@@ -47,12 +43,6 @@ You *can* deposit and withdraw immediately. Nothing stops you. But if you deposi
 | Withdraw | 0.05 ALGO (taken from your withdrawal) |
 
 No subscriptions, no tokens, no hidden fees. The infrastructure runs on Cloudflare's free tier — **$0/month**.
-
-### How private is it?
-
-Your privacy depends on the **anonymity set** — how many people your transaction hides among. If 100 people deposit 1 ALGO and you withdraw, an observer knows you're one of those 100, but not which one. If only 2 people deposited, you're one of 2. More users = better privacy. This is true for every privacy pool, not just 2birds.
-
-The app shows your current anonymity set size so you can make an informed decision about when to withdraw.
 
 ---
 
