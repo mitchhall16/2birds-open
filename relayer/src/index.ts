@@ -5,7 +5,7 @@
  * sender is the relayer address, not the user's wallet (preserving privacy).
  *
  * Supports two verification modes:
- *   - PLONK LogicSig (default): 4-txn LogicSig group + pool app call
+ *   - PLONK LogicSig (default): 1 LogicSig + 5 padding txns + pool pay + app call (8-txn group)
  *   - Groth16 app call (legacy): verifier app call + pool app call
  *
  * POST /api/withdraw
@@ -36,8 +36,18 @@ interface Env {
   ALLOWED_ORIGINS?: string
 }
 
+// Compiled PLONK deposit verifier (too large for CF secrets, embedded here)
+const PLONK_DEPOSIT_VERIFIER_TEAL_EMBEDDED = 'CzEWgQATQBn8MgSBBQ9EMwMAMQASRDMBBUkBgCBwc3GbdfdRUUnCE+JSiJYP8HYIlQZXFHIULBnbARfc7BJENTIxBUkVgYAGEkQ1DzQPVwBANQA0D1dAQDUBNA9XgEA1AjQPV8BANQM0D4GAAoFAWDUENA+BwAKBQFg1BTQPgYADgUBYNQY0D4HAA4EgWDUHNA+B4AOBIFg1CDQPgYAEgSBYNQk0D4GgBIEgWDUKNA+BwASBIFg1CzQPgeAEgSBYNQw0D4GABYFAWDUNNA+BwAWBQFg1DjMDBUkVgYABEkQ1MzMCBUkVgYABEkQ1NDQyVwggNRQ0MlcoIDUVNDJXSCA1FjQyV2hANRc0MleoQDUYNDJX6EA1GTQygagCgUBYNRo0MoHoAoFAWDUbNDKBqAOBQFg1HDQygegDgUBYNR00MoGoBIFAWDUeNDKB6ASBgAFYNR80FzQYUDQZUDQaUDQbUDQcUDQdUDQeUDQzUDQAUDQBUDQCUAKAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDUgNCACgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJFYEgTAmvTFA1ITQgNCFQNANQAoAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqSRWBIEwJr0xQNSI0IjQEUDQFUDQGUAKAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDUjNCM0B1A0CFA0CVA0ClA0C1A0DFACgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJFYEgTAmvTFA1JDQNNA5QAoAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqSRWBIEwJr0xQNSU0I0mjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqSaOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkmjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqSaOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkmjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqSaOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkmjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqSaOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkmjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqSaOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkmjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJNSeAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAUyhoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNSaAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABNUY0NFcAIEk1RzQjNEaAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABTKGggCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAaqAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqSRWBIEwJr0xQgCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARJENEY0JqOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjRHo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqSRWBIEwJr0xQNUk0FjVGNDRXICBJNUc0IzRGgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAUyhoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqgCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAKOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqqOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUIAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAESRDRGNCajgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0R6OAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDVKNBY0RqOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjVGNDRXQCBJNUc0IzRGgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAUyhoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqgCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAKOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqqOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUIAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAESRDRGNCajgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0R6OAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDVLNBY0RqOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjVGNDRXYCBJNUc0IzRGgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAUyhoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqgCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAKOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqqOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUIAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAESRDRGNCajgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0R6OAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDVMgCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADQzVwAgNEmjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAaqAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABTKGggCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0M1cgIDRKo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAUyhoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNDNXQCA0S6OAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqoAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAFMoaCAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjQzV2AgNEyjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAaqAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABTKGggCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJFYEgTAmvTFA1KjQiSaOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDUoNCg0SaOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjVGNCA0CqOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjQHoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNCGggCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao1RzQgNAujgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0CKCAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjQhoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNUg0CTQhoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNEejgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0SKOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjQMo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNCKjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJFYEgTAmvTFA1RzQqNEaAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABTKGggCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0R4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAFMoaCAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDUrNAc0CKOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDVGNCA0I6OAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDUsNAc0LKCAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjQhoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNUc0LDQUo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNAiggCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0IaCAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjVINCw0FaOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjQJoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNCGggCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0R6OAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjRIo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNCKjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0KDRJo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNCWggCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJFYEgTAmvTFA1RzQgNAqjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0B6CAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjQhoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNUg0IDQLo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNAiggCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0IaCAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjRIo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNCKjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0IKOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjQMo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAUyhSRWBIEwJr0xQNUg0JoAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAFMoUkVgSBMCa9MUDVLNEs0J6OAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDVMNCc0J6OAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjVNNEs0TaOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDVONBc0GFA0GVA0GlA0A1A0HlA0G1A0BFA0BVA0BlA0RjQHUDQIUDQJUDRHUDRIUIAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFQNEtQNExQNE5Q4wA1PDQkSaOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDUtNC00JKOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDUuNC40JKOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDUvNC80JKOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqkkVgSBMCa9MUDUwNDw0AFA0AVA0AlA0HFA0HVCAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABNCRQNC1QNC5QNC9QNDBQ4wA1PYAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAE0K6FJFYEgTAmvTFA0JDQHo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNC00CKOAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqqCAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjQuNAmjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAaqggCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAao0LzQKo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqoIAgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNDA0C6OAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqqCAIDBkTnLhMaApuFBFtoGBWF0oM+hIeblwkUPh9ZPwAAABqjQlNAyjgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAaqggCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJFYEgTAmvTFA1RjQONCXhADQN4AA1PjQ+VwAgND5XICCAIDBkTnLhMaApuFBFtoGBWF2XgWqRaHHKjTwgjBbYfP1HTKFJFYEgTAmvTFBQNT40JTQjo4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAGqNBajgCAwZE5y4TGgKbhQRbaBgVhdKDPoSHm5cJFD4fWT8AAAAapJFYEgTAmvTFA1T4AgMGROcuExoCm4UEW2gYFYXSgz6Eh5uXCRQ+H1k/AAAAE0RqFJFYEgTAmvTFA1TjQNNA5QND1QgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACUDQjNE9QgCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVA0TlDjADU/ND40P1A0H4CAARgA3u8SHx52QmoAZl5cRHlnQyLU917a3UbevVzZkvbtGY6Tk5INSDpyYL+3MftdJfGqSTM1qecSl+SFt67zEsISyF6l24xt60qrcYCNy0CP49HnaQxD03tM5swBZvp9qgkGidBYX/B17J6ZrWkMM5W8SzEzcLOO81Ws2tzRIpdbUOIARIEBQzMAADEAEkQxCIEAEkQxBzEAEkSBAUM='
+const PLONK_DEPOSIT_VERIFIER_ADDR_EMBEDDED = 'Q4NKMNKJFOQYPWHVHODP7LUDIBPL3ZSTZLVUQ5UW6JORPWQ4N57UB7XQMQ'
+const PLONK_DEPOSIT_VK_HEX_EMBEDDED = '00000004000000100000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000300eeb2cb5981ed45649abebde081dcff16c8601de4347e7dd1628ba2daac43b7219fba44a8bb21cb80bf3478c945161c258855ba7665049755e67df45eb816ee00cf67e193d31b42fa308bd01733eed3025576cc53d1d70a224e22d7107dc76b29f6b7541048617ace867f78f9218e3e248ae3edeb100173a87f85975ae94c0e077a92780c6cc21da44162c59014d20847dd3fe47da420ea08eafd0dbbf40d091335c110b4a2c3f028b96303e4afc15461e54946bbaafe85fe64fbe44c4f4b7b03bf455f54afdce670ca43d3cdc7693d56e652ae4229ce42650fa59262b1a6cb255328f6d5c3c6a91656c712ed372b61efc27f468a1eda437ed2dffa683d9ac31a406b7b05095f6f74324d3595dfcb5a41e95c067cdbcc3165bc52325b917fcd1a0a01f36dadf49f77b80479312456282a49644f1738368f34c31dea18b79f372ddcad5a9a51d8c5daa3489d0006219c40b42516ab27e459921d7760f187272424efe9ac0f5be474cf9fafa145173ef315a58bb5dd7cf93403b289e83f7188070d24975b49b2c59dee137e7940426ed5657e2b9368b422e7900211e8a1d2d48e0746f44674f7201dcb9f92dbd2beb756b5ae8e638847a8d86c1e9343f638fc170a6d786362920b0f1fb1ac0c95940c69a476fd5b7241a675ca08513cfa4aba3428b9f8042c3f344e6d898cd429139a3a34d14d28dda56c79f2e67ae0c1e6d9a82964d870330e3c62ef013d9f36be4febc988a31f5e85c2f80d8dbb680fc116d930441fd1b5d3370482c42152a8899027716989a6996c2535bc9f7fee8aaef79e26186a2d65ee4d2f9c9a5b91f86597d35f192cd120caf7e935d8443d1938e23d054793348f12c0cf5622c340573cb277586319de359ab9389778f689786b1e481970ea81dd6992adfbc571effb03503adbbb6a857f578403c6c40e22d65b3c02'
+
+// Compiled PLONK withdraw verifier (too large for CF secrets, embedded here)
+const PLONK_WITHDRAW_VERIFIER_TEAL_EMBEDDED = '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'
+const PLONK_WITHDRAW_VERIFIER_ADDR_EMBEDDED = 'PBVB7NKXKETOSI4ORWQY7A77PFNRUD4I2PL5L7HZ7EQSHNGIT4R2R6FXFY'
+const PLONK_WITHDRAW_VK_HEX_EMBEDDED = '000000060000000f000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000032d1ba66f5941dc91017171fa69ec2bd0022a2a2d4115a009a93458fd4e26ecfb0a680a0c5b6167b76bb177f86df653468fdb4bdaedb73a7f1d44f3a9cf9c736108d7eb1c7afdf2bcc4185ba340a93e70b0fbabb53cc94f43de358cf72831b3ae11363a803100245bbb63f994adce3b1ddea7f163ac8c88378df1d2ab29b21e4402a2bae4e12f275888e4920029b11202c9c5e6b4ebce685cdae49f8416fb3a7303de0db1c5b6d9068a50655ed178e5aa9068f6ed6dbd0fbae7e2dfac2f698555217f5566f5ca2a6dacbc8c9b046cf5295623add5d09003f43e40e757d952c52901fe5b0a618eea7ffc9205b9a050094610ec08341f56883fb7f613e3686a93ac1aac63b0fe283dc28cd850b8cfe09bc1f3219cf0136a791e8528ef6a5af7d85709d1de037a6c9a375564211617326e08dfcf6406e22f854544d70ac582a869331eedc11c5aa73612b3ae0c2d817a06626273da68d76dd1663889535cc34ea640170b3e4f6a92d4cea661fbb82e7e1d052f704ff4df291981cad77c691d4e2d7c28764ec5eb33400ff5caa575ac9770233941f2ae962cb42c46dbe5937f96f6671fc90a70a6a9a2481479de4f2903ec851700092a8a0892cc38cdee1fdf2759261405f9970edd9f718d41e79aa5563457980cbb94584ca6853c06fa3bf53888a40c5b0c39868b1dec789de3baad402321e2aef25ea2451d3cf23e92368fccfd6f072ae0c4d25e47eb375499f49f18cf87c0187e732f193392be1cb5317ad2420730441fd1b5d3370482c42152a8899027716989a6996c2535bc9f7fee8aaef79e26186a2d65ee4d2f9c9a5b91f86597d35f192cd120caf7e935d8443d1938e23d054793348f12c0cf5622c340573cb277586319de359ab9389778f689786b1e481970ea81dd6992adfbc571effb03503adbbb6a857f578403c6c40e22d65b3c02'
+
 const PLONK_MIN_RELAY_FEE = 10_000  // 0.01 ALGO (PLONK is cheap)
-const GROTH16_MIN_RELAY_FEE = 220_000 // 0.22 ALGO (covers 213K verifier + 2K app + 1K pay + margin)
+const GROTH16_MIN_RELAY_FEE = 1_000 // 0.001 ALGO (testnet: relayer absorbs 213K verifier txn fee)
 const MAX_RELAY_FEE = 1_000_000 // 1 ALGO — reject unreasonably high fees (prevents griefing)
 
 // Anti-correlation: minimum deposits in a pool before the relayer will process withdrawals.
@@ -506,55 +516,87 @@ async function handleWithdraw(request: Request, env: Env): Promise<Response> {
       ],
       accounts: [body.recipient],
       boxes: withdrawBoxes,
-      suggestedParams: { ...params, fee: BigInt(2000), flatFee: true },
+      suggestedParams: { ...params, fee: BigInt(5000), flatFee: true },
     })
 
     let signedTxns: Uint8Array[]
     let txId: string
 
     if (mode === 'plonk') {
-      // ── PLONK LogicSig mode ──
-      if (!env.PLONK_VERIFIER_TEAL || !env.PLONK_VERIFIER_ADDR) {
+      // ── PLONK LogicSig mode (2-LogicSig, 16-txn group) ──
+      // [0]  LogicSig Payment (verifier→verifier, Note=proof 768 bytes)
+      // [1]  Relayer Payment  (relayer→relayer,   Note=VK 744 bytes)
+      // [2]  Relayer Payment  (relayer→relayer,   Note=inverses 192 bytes)
+      // [3]  LogicSig Payment (verifier→verifier, Note=signals 192 bytes)
+      // [4]  Withdraw App Call (relayer, poolAppId)
+      // [5-15] 11 Relayer Padding Payments (random notes)
+      // 16-txn group = 16,000 byte budget (2 LogicSigs × ~7.6 KB = ~15.2 KB fits)
+      const tealB64 = env.PLONK_VERIFIER_TEAL || PLONK_WITHDRAW_VERIFIER_TEAL_EMBEDDED
+      const verifierAddr = env.PLONK_VERIFIER_ADDR || PLONK_WITHDRAW_VERIFIER_ADDR_EMBEDDED
+      if (!tealB64 || !verifierAddr) {
         return json({ error: 'PLONK verifier not configured on relayer' }, 500)
       }
 
       const inversesBytes = hexToBytes(body.inverses!)
       const programBytes = new Uint8Array(
-        atob(env.PLONK_VERIFIER_TEAL).split('').map(c => c.charCodeAt(0))
+        atob(tealB64).split('').map(c => c.charCodeAt(0))
       )
-      const verifierAddr = env.PLONK_VERIFIER_ADDR
 
       // Decode VK bytes for Note field
-      const vkBytes = env.PLONK_VK_HEX ? hexToBytes(env.PLONK_VK_HEX) : new Uint8Array(0)
+      const withdrawVkHex = env.PLONK_VK_HEX || PLONK_WITHDRAW_VK_HEX_EMBEDDED
+      const vkBytes = withdrawVkHex ? hexToBytes(withdrawVkHex) : new Uint8Array(0)
 
-      // Build 4 LogicSig payment txns
-      const makeLsigPay = (note?: Uint8Array) =>
+      // [0] LogicSig Payment — proof in Note (TEAL reads txn Note)
+      const lsigTxn0 = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: verifierAddr,
+        receiver: verifierAddr,
+        amount: 0,
+        note: proofBytes,
+        suggestedParams: { ...params, fee: BigInt(1000), flatFee: true },
+      })
+
+      const makePadding = (note?: Uint8Array) =>
         algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-          sender: verifierAddr,
-          receiver: verifierAddr,
+          sender: relayerAddrStr,
+          receiver: relayerAddrStr,
           amount: 0,
           suggestedParams: { ...params, fee: BigInt(1000), flatFee: true },
-          note,
+          note: note || crypto.getRandomValues(new Uint8Array(8)),
         })
 
-      const lsigTxns = [
-        makeLsigPay(),              // [0] verifier
-        makeLsigPay(vkBytes),       // [1] VK in Note
-        makeLsigPay(),              // [2] budget padding
-        makeLsigPay(signalsBytes),  // [3] signals in Note
-      ]
+      const paddingTxn1 = makePadding(vkBytes)        // [1] VK in Note
+      const paddingTxn2 = makePadding(inversesBytes)   // [2] inverses in Note
 
-      const group = [...lsigTxns, withdrawAppCall]
+      // [3] LogicSig Payment — signals in Note (budget_padding branch; pool reads prevTxn.note)
+      const lsigTxn3 = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: verifierAddr,
+        receiver: verifierAddr,
+        amount: 0,
+        note: signalsBytes,
+        suggestedParams: { ...params, fee: BigInt(1000), flatFee: true },
+      })
+
+      // [5-15] 11 padding txns for byte budget
+      const paddingAfter: algosdk.Transaction[] = []
+      for (let i = 0; i < 11; i++) {
+        paddingAfter.push(makePadding())
+      }
+
+      const group = [lsigTxn0, paddingTxn1, paddingTxn2, lsigTxn3, withdrawAppCall, ...paddingAfter]
       algosdk.assignGroupID(group)
 
-      // Sign LogicSig txns with proof + inverses as args
-      const lsig = new algosdk.LogicSigAccount(programBytes, [proofBytes, inversesBytes])
-      const signedLsig = lsigTxns.map(txn => algosdk.signLogicSigTransaction(txn, lsig).blob)
+      // Sign both LogicSig txns — NO args (TEAL reads data from Note fields)
+      const lsig = new algosdk.LogicSigAccount(programBytes)
+      const signedLsig0 = algosdk.signLogicSigTransaction(lsigTxn0, lsig).blob
+      const signedLsig3 = algosdk.signLogicSigTransaction(lsigTxn3, lsig).blob
 
-      // Sign withdraw app call with relayer key
+      // Sign relayer txns
+      const signedPad1 = paddingTxn1.signTxn(relayer.sk)
+      const signedPad2 = paddingTxn2.signTxn(relayer.sk)
       const signedWithdraw = withdrawAppCall.signTxn(relayer.sk)
+      const signedPaddingAfter = paddingAfter.map(txn => txn.signTxn(relayer.sk))
 
-      signedTxns = [...signedLsig, signedWithdraw]
+      signedTxns = [signedLsig0, signedPad1, signedPad2, signedLsig3, signedWithdraw, ...signedPaddingAfter]
       txId = withdrawAppCall.txID()
     } else {
       // ── Groth16 app-based mode ──
@@ -571,7 +613,7 @@ async function handleWithdraw(request: Request, env: Env): Promise<Response> {
         onComplete: algosdk.OnApplicationComplete.NoOpOC,
         appArgs: [proofBytes, signalsBytes],
         foreignApps: budgetHelperAppId ? [budgetHelperAppId] : [],
-        suggestedParams: { ...params, fee: BigInt(213_000), flatFee: true },
+        suggestedParams: { ...params, fee: BigInt(220_000), flatFee: true },
       })
 
       const group = [verifierAppCall, withdrawAppCall]
@@ -591,9 +633,18 @@ async function handleWithdraw(request: Request, env: Env): Promise<Response> {
 
     return json({ txId: confirmedTxId, status: 'confirmed', mode })
   } catch (err: any) {
-    console.error('Relayer withdraw error:', (err?.message || 'unknown').slice(0, 80))
-    // Return a generic error — do not leak on-chain error details (e.g. nullifier state)
-    return json({ error: 'Transaction failed' }, 500)
+    const errMsg = err?.message || 'unknown'
+    // Extract just the rejection reason (skip the serialized transaction bytes)
+    const logicEvalIdx = errMsg.indexOf('logic eval')
+    const rejectedIdx = errMsg.indexOf('rejected by logic')
+    const exceedsIdx = errMsg.indexOf('exceeds')
+    const budgetIdx = errMsg.indexOf('budget')
+    const signalPart = logicEvalIdx >= 0 ? errMsg.slice(logicEvalIdx, logicEvalIdx + 500)
+      : rejectedIdx >= 0 ? errMsg.slice(rejectedIdx, rejectedIdx + 500)
+      : exceedsIdx >= 0 ? errMsg.slice(exceedsIdx, exceedsIdx + 500)
+      : errMsg.slice(-500)
+    console.error('Relayer withdraw error:', signalPart)
+    return json({ error: 'Transaction failed', detail: signalPart }, 500)
   }
 }
 
@@ -805,16 +856,6 @@ async function handleDeposit(request: Request, env: Env): Promise<Response> {
       return rejectAndRelease('hpkeNote must be at most 1024 bytes')
     }
 
-    // Batch window pre-check — reject deposits outside the ~240s window
-    // Contract enforces: windowOffset <= 120 || windowOffset >= 780 (per 900s period)
-    // Use 30s buffer for clock skew between relayer and on-chain timestamp
-    const approxTimestamp = Math.floor(Date.now() / 1000)
-    const windowOffset = approxTimestamp % 900
-    if (windowOffset > 150 && windowOffset < 750) {
-      const secsUntilNext = 900 - windowOffset
-      return rejectAndRelease(`Outside batch window — next window opens in ~${Math.ceil(secsUntilNext / 60)} minutes`)
-    }
-
     // Submit user's payment FIRST — if it fails, don't front the deposit
     // This prevents the race where user drains their account after we front funds.
     const payResp = await algod.sendRawTransaction(signedPaymentBytes).do()
@@ -857,10 +898,19 @@ async function handleDeposit(request: Request, env: Env): Promise<Response> {
     let txId: string
 
     if (mode === 'plonk') {
-      const tealB64 = env.PLONK_DEPOSIT_VERIFIER_TEAL
-      const verifierAddr = env.PLONK_DEPOSIT_VERIFIER_ADDR
+      // ── PLONK LogicSig mode (2-LogicSig, 16-txn group) ──
+      // [0]  LogicSig Payment (verifier→verifier, Note=proof 768 bytes)
+      // [1]  Relayer Payment  (relayer→relayer,   Note=VK bytes)
+      // [2]  Relayer Payment  (relayer→relayer,   Note=inverses bytes)
+      // [3]  LogicSig Payment (verifier→verifier, Note=signals 128 bytes)  ← VERIFIER
+      // [4]  Pool Funding Payment (relayer→pool, denomination amount)
+      // [5]  Deposit App Call (relayer, poolAppId)  ← groupIndex=5, verifierTxn=group[3] ✓
+      // [6-15] 10 Relayer Padding Payments (random notes)
+      // 16-txn group = 16,000 byte budget (2 LogicSigs × ~6.7 KB = ~13.4 KB fits)
+      const tealB64 = env.PLONK_DEPOSIT_VERIFIER_TEAL || PLONK_DEPOSIT_VERIFIER_TEAL_EMBEDDED
+      const verifierAddr = env.PLONK_DEPOSIT_VERIFIER_ADDR || PLONK_DEPOSIT_VERIFIER_ADDR_EMBEDDED
       if (!tealB64 || !verifierAddr) {
-        return json({ error: 'PLONK deposit verifier not configured on relayer' }, 500)
+        return json({ error: 'PLONK deposit verifier not configured' }, 500)
       }
 
       const inversesBytes = hexToBytes(body.inverses!)
@@ -868,35 +918,66 @@ async function handleDeposit(request: Request, env: Env): Promise<Response> {
         atob(tealB64).split('').map(c => c.charCodeAt(0))
       )
 
-      const vkBytes = env.PLONK_DEPOSIT_VK_HEX ? hexToBytes(env.PLONK_DEPOSIT_VK_HEX) : new Uint8Array(0)
+      const depositVkHex = env.PLONK_DEPOSIT_VK_HEX || PLONK_DEPOSIT_VK_HEX_EMBEDDED
+      const vkBytes = depositVkHex ? hexToBytes(depositVkHex) : new Uint8Array(0)
 
-      const makeLsigPay = (note?: Uint8Array) =>
+      // [0] LogicSig Payment — proof in Note (TEAL reads txn Note)
+      const lsigTxn0 = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: verifierAddr,
+        receiver: verifierAddr,
+        amount: 0,
+        note: proofBytes,
+        suggestedParams: { ...params, fee: BigInt(1000), flatFee: true },
+      })
+
+      const makePadding = (note?: Uint8Array) =>
         algosdk.makePaymentTxnWithSuggestedParamsFromObject({
-          sender: verifierAddr,
-          receiver: verifierAddr,
+          sender: relayerAddrStr,
+          receiver: relayerAddrStr,
           amount: 0,
           suggestedParams: { ...params, fee: BigInt(1000), flatFee: true },
-          note,
+          note: note || crypto.getRandomValues(new Uint8Array(8)),
         })
 
-      const lsigTxns = [
-        makeLsigPay(),
-        makeLsigPay(vkBytes),
-        makeLsigPay(),
-        makeLsigPay(signalsBytes),
-      ]
+      const paddingTxn1 = makePadding(vkBytes)        // [1] VK in Note
+      const paddingTxn2 = makePadding(inversesBytes)   // [2] inverses in Note
 
-      const group = [...lsigTxns, poolPayTxn, depositAppCall]
+      // [3] LogicSig Payment — signals in Note (budget_padding branch; pool reads group[appCallIndex-2].note)
+      const lsigTxn3 = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: verifierAddr,
+        receiver: verifierAddr,
+        amount: 0,
+        note: signalsBytes,
+        suggestedParams: { ...params, fee: BigInt(1000), flatFee: true },
+      })
+
+      // [4] poolPayTxn (already created above)
+      // [5] depositAppCall (already created above)
+
+      // [6-15] 10 padding txns for byte budget
+      const paddingAfter: algosdk.Transaction[] = []
+      for (let i = 0; i < 10; i++) {
+        paddingAfter.push(makePadding())
+      }
+
+      // Deposit: verifier at [3], payment at [4], app call at [5]
+      // Pool reads verifierTxn = group[appCallIndex - 2] = group[3] ✓
+      const group = [lsigTxn0, paddingTxn1, paddingTxn2, lsigTxn3, poolPayTxn, depositAppCall, ...paddingAfter]
       algosdk.assignGroupID(group)
 
-      const lsig = new algosdk.LogicSigAccount(programBytes, [proofBytes, inversesBytes])
-      const signedLsig = lsigTxns.map(txn => algosdk.signLogicSigTransaction(txn, lsig).blob)
+      // Sign both LogicSig txns — NO args (TEAL reads data from Note fields)
+      const lsig = new algosdk.LogicSigAccount(programBytes)
+      const signedLsig0 = algosdk.signLogicSigTransaction(lsigTxn0, lsig).blob
+      const signedLsig3 = algosdk.signLogicSigTransaction(lsigTxn3, lsig).blob
 
-      signedTxns = [
-        ...signedLsig,
-        poolPayTxn.signTxn(relayer.sk),
-        depositAppCall.signTxn(relayer.sk),
-      ]
+      // Sign relayer txns
+      const signedPad1 = paddingTxn1.signTxn(relayer.sk)
+      const signedPad2 = paddingTxn2.signTxn(relayer.sk)
+      const signedPoolPay = poolPayTxn.signTxn(relayer.sk)
+      const signedDeposit = depositAppCall.signTxn(relayer.sk)
+      const signedPaddingAfter = paddingAfter.map(txn => txn.signTxn(relayer.sk))
+
+      signedTxns = [signedLsig0, signedPad1, signedPad2, signedLsig3, signedPoolPay, signedDeposit, ...signedPaddingAfter]
       txId = depositAppCall.txID()
     } else {
       // Groth16 app-based
@@ -961,6 +1042,7 @@ async function handleDeposit(request: Request, env: Env): Promise<Response> {
 
     return json({
       error: 'Deposit failed after payment confirmed — refund queued',
+      detail: err?.message || 'unknown',
       paymentTxId: payTxId,
       refundStatus: 'queued',
     }, 500)

@@ -22,6 +22,18 @@ export function WalletConnect({ walletBalance }: { walletBalance?: number }) {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [])
 
+  // Escape key closes dropdown and modal
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setShowDropdown(false)
+        setShowModal(false)
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
   async function handleConnect(walletId: string) {
     const wallet = wallets.find((w) => w.id === walletId)
     if (wallet) {

@@ -87,7 +87,7 @@ interface TxState {
 }
 
 interface UseTransactionReturn extends TxState {
-  deposit: (microAlgos: bigint, skipBatchWait?: boolean, subsidyMicroAlgos?: bigint) => Promise<void>
+  deposit: (microAlgos: bigint, skipBatchWait?: boolean, subsidyMicroAlgos?: bigint, scheduledTime?: number) => Promise<void>
   withdraw: (noteCommitment: bigint, destinationAddr: string) => Promise<void>
   privateSend: (microAlgos: bigint, destinationAddr: string, skipBatchWait?: boolean, subsidyMicroAlgos?: bigint) => Promise<void>
   churnNote: (note: DepositNote) => Promise<void>
@@ -786,7 +786,7 @@ export function useTransaction(): UseTransactionReturn {
   const MAX_DEPOSIT_RETRIES = 3
 
   // ── DEPOSIT ──────────────────────────────
-  const deposit = useCallback(async (microAlgos: bigint, skipBatchWait?: boolean, subsidyMicroAlgos?: bigint) => {
+  const deposit = useCallback(async (microAlgos: bigint, skipBatchWait?: boolean, subsidyMicroAlgos?: bigint, scheduledTime?: number) => {
     let effectiveSender: string
     let effectiveSigner: (txns: algosdk.Transaction[], indices: number[]) => Promise<Uint8Array[]>
     let isFalcon: boolean
@@ -846,8 +846,25 @@ export function useTransaction(): UseTransactionReturn {
       const depositIdx = await claimNextDepositIndex() // atomic: claims index + increments counter
       const note = deriveDeposit(masterKey, depositIdx, microAlgos, 0)
 
-      // Wait for batch window (timing attack mitigation)
-      await awaitBatchWindow(skipBatchWait)
+      // If a specific time was scheduled, wait until then (proof+signing already done above)
+      if (scheduledTime) {
+        const now = Date.now()
+        const waitMs = scheduledTime - now
+        if (waitMs > 1000) {
+          setState(s => ({ ...s, stage: 'waiting_batch', message: `Signed. Submitting at scheduled time...` }))
+          // Update countdown every second
+          const countdownId = setInterval(() => {
+            const remaining = Math.max(0, scheduledTime - Date.now())
+            const m = Math.floor(remaining / 60000)
+            const sec = Math.floor((remaining % 60000) / 1000)
+            setState(s => ({ ...s, batchCountdown: `${m}:${String(sec).padStart(2, '0')}` }))
+          }, 1000)
+          await new Promise<void>(resolve => setTimeout(resolve, waitMs))
+          clearInterval(countdownId)
+        }
+      } else if (!skipBatchWait) {
+        await awaitBatchWindow(true) // instant mode — skip batch wait
+      }
       setState(s => ({ ...s, stage: 'depositing', message: 'Starting deposit...', txId: null, error: null }))
 
       // Attempt deposit with retry on stale root (concurrent deposit by another user)

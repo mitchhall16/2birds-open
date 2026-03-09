@@ -76,7 +76,7 @@ export const POOL_DENOMINATION = 1_000_000n
 
 // Per-denomination pool contracts
 export const POOL_CONTRACTS: Record<string, { appId: number; appAddress: string }> = {
-  '100000': { appId: 756478534, appAddress: 'KKBAABJWKQADOM6HG4JPDQDQMCD5JSMJR2HCNDQGQRW4KL5UDVVUWGMU5E' },
+  '100000': { appId: 756813724, appAddress: 'D6K6AS3AMFWVU3LH3PM6WT3YLIP64OMVNMWKJEBIZBTTJTLJ7YPL3T4BTY' },
   '500000': { appId: 756478549, appAddress: 'E5TRMAZSX6FCSFVZU6OLS372YB56GAW662CHX2NAD6C7VATSYYVXECKDG4' },
   '1000000': { appId: 756480627, appAddress: '624W56BLCEIXUMOYCDYACW3QOJEKQTCC6YXY4Q7Z3Z4WQUOBERZTUEHP7I' },
 }
@@ -140,18 +140,18 @@ const GROTH16_FEES = {
   minBalance: 100_000n,
 }
 
-// PLONK LogicSig fees (~0.007 ALGO per operation)
+// PLONK LogicSig fees (~0.018 ALGO per operation, 16-txn group)
 const PLONK_LSIG_FEES = {
-  deposit: 7_000n,               // 4 LogicSig (0.004) + payment (0.001) + pool app call (0.002)
-  withdraw: 6_000n,              // 4 LogicSig (0.004) + pool app call (0.002)
-  privateSend: 7_000n,           // 4 LogicSig (0.004) + payment (0.001) + pool app call (0.002)
-  split: 14_000n,                // 2x verification groups
-  combine: 14_000n,              // 2x verification groups
-  verifierCall: 4_000n,          // 4 LogicSig txns
-  withdrawVerifierCall: 4_000n,
-  privateSendVerifierCall: 4_000n,
-  splitVerifierCall: 4_000n,
-  combineVerifierCall: 4_000n,
+  deposit: 20_000n,              // 16 txns (0.016) + payment (0.001) + pool app call (0.002) + margin
+  withdraw: 20_000n,             // 16 txns (0.016) + pool app call (0.002) + margin
+  privateSend: 21_000n,          // 16 txns (0.016) + payment (0.001) + pool app call (0.002) + margin
+  split: 40_000n,                // 2x verification groups
+  combine: 40_000n,              // 2x verification groups
+  verifierCall: 16_000n,         // 16 txns (2 LogicSigs + 14 padding)
+  withdrawVerifierCall: 16_000n,
+  privateSendVerifierCall: 16_000n,
+  splitVerifierCall: 16_000n,
+  combineVerifierCall: 16_000n,
   minBalance: 100_000n,
 }
 
@@ -165,7 +165,7 @@ export const FALCON_EXTRA_FEE = {
   plonk: 0n,
 } as const
 
-// Batch window interval (minutes). Deposits snap to :00, :15, :30, :45
+// Batch window interval (minutes) — UI-only, used for optional timing batches
 export const BATCH_WINDOW_MINUTES = 15
 
 // Treasury address for protocol fees
@@ -222,9 +222,9 @@ export const PLONK_VERIFIER_ADDRESSES: Record<string, {
   privateSend?: string
 }> = {
   testnet: {
-    withdraw: 'Y5EGJIAMTCQJ5VYEPPNHUXLJ2QOAQRFION77ILEOFM63V5DOURIOSLE2XE',
-    deposit: 'T7LRWUZ3PL5RPGNMFDQNU7KETGLG2KKXV2YWODJ4KZFJSN5I3IPQEH7E44',
-    privateSend: 'ANQG655MULTMHGQVJEEBKUDISGQ7OFNG7WBQXQPHQOKH4LSO5QMNA2KLIE',
+    withdraw: 'PBVB7NKXKETOSI4ORWQY7A77PFNRUD4I2PL5L7HZ7EQSHNGIT4R2R6FXFY',
+    deposit: 'Q4NKMNKJFOQYPWHVHODP7LUDIBPL3ZSTZLVUQ5UW6JORPWQ4N57UB7XQMQ',
+    privateSend: 'F53SJ3YAMXG4LTDZT5RMS7JJTJKD5HVVBYWT3XRLWIZSGLGHUSJSBH7JNQ',
   },
   mainnet: {
     withdraw: undefined,

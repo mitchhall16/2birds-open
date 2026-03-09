@@ -85,6 +85,39 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
     return () => document.removeEventListener('visibilitychange', handleVisibility)
   }, [])
 
+  // Upcoming batch windows — optional for users who want more privacy by depositing at a known time
+  const [selectedBatchWindow, setSelectedBatchWindow] = useState<number | null>(null)
+  const [batchWindows, setBatchWindows] = useState<Array<{ id: number; slot: string; countdown: string; isNext: boolean; timestamp: number }>>([])
+  useEffect(() => {
+    function update() {
+      const now = new Date()
+      const totalMins = now.getHours() * 60 + now.getMinutes()
+      const secs = now.getSeconds()
+      const currentSlotMins = Math.floor(totalMins / 15) * 15
+      const upcoming: Array<{ id: number; slot: string; countdown: string; isNext: boolean; timestamp: number }> = []
+      for (let i = 1; i <= 3; i++) {
+        const targetMins = currentSlotMins + i * 15
+        const secsUntil = (targetMins - totalMins) * 60 - secs
+        const targetDate = new Date(now)
+        targetDate.setHours(Math.floor(targetMins / 60) % 24, targetMins % 60, 0, 0)
+        const timeStr = targetDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+        const m = Math.floor(secsUntil / 60)
+        const s = secsUntil % 60
+        upcoming.push({
+          id: i,
+          slot: timeStr,
+          countdown: `${m}:${String(s).padStart(2, '0')}`,
+          isNext: i === 1,
+          timestamp: targetDate.getTime(),
+        })
+      }
+      setBatchWindows(upcoming)
+    }
+    update()
+    const id = setInterval(update, 1000)
+    return () => clearInterval(id)
+  }, [])
+
   const tierAmount = Number(selectedTier.microAlgos) / 1_000_000
   const isValidDest = destination.length > 0 && (algosdk.isValidAddress(destination) || isPrivacyAddress(destination))
   const isValidManageDest = manageDestination.length > 0 && algosdk.isValidAddress(manageDestination)
@@ -156,7 +189,10 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
 
   async function handleDeposit() {
     if (!canDeposit) return
-    await withPasswordFallback(() => tx.deposit(selectedTier.microAlgos, false, selectedSubsidy))
+    const scheduledWindow = selectedBatchWindow !== null
+      ? batchWindows.find(w => w.id === selectedBatchWindow)
+      : null
+    await withPasswordFallback(() => tx.deposit(selectedTier.microAlgos, false, selectedSubsidy, scheduledWindow?.timestamp))
   }
 
   async function handleSend() {
@@ -331,16 +367,15 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                   <div className="tx-field__hint">Privacy address detected — note will be encrypted for recipient</div>
                 )}
               </div>
-              <div className="privacy-warning privacy-warning--strong">
-                <strong>Heads up:</strong> Quick Send deposits and withdraws in the same block — fast but less private. For best privacy, <button className="tx-info-link" onClick={() => setTab('deposit')}>Deposit</button> first, wait, then withdraw from <button className="tx-info-link" onClick={() => setTab('manage')}>Manage</button>.
-              </div>
-              <label className="privacy-ack">
+              <label className="privacy-ack-block">
                 <input
                   type="checkbox"
                   checked={privacyAcknowledged}
                   onChange={e => setPrivacyAcknowledged(e.target.checked)}
                 />
-                <span>I understand — quick but less private</span>
+                <span>
+                  <strong>Less private:</strong> deposits & withdraws in one block. For best privacy, <button className="tx-info-link" onClick={() => setTab('deposit')}>Deposit</button> first, then withdraw from <button className="tx-info-link" onClick={() => setTab('manage')}>Manage</button>.
+                </span>
               </label>
             </>
           )}
@@ -351,26 +386,53 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                 <strong>How it works:</strong> Depositing shields your ALGO in the privacy pool. To send it to another address later, go to <button className="tx-info-link" onClick={() => setTab('manage')}>Manage</button> and withdraw.
               </div>
 
-              {tx.poolNextIndices.size > 0 && (
-                <div className="anonymity-indicator">
-                  <div className="anonymity-indicator__title">Pool Activity</div>
-                  {DENOMINATION_TIERS.map(tier => {
-                    const pool = POOL_CONTRACTS[tier.microAlgos.toString()]
-                    if (!pool) return null
-                    const count = tx.poolNextIndices.get(pool.appId) ?? 0
-                    const level = count >= 50 ? 'good' : count >= 10 ? 'moderate' : 'low'
-                    return (
-                      <div key={tier.label} className="anonymity-indicator__row">
-                        <span className="anonymity-indicator__tier">{tier.label} ALGO</span>
-                        <span className="anonymity-indicator__count">{count} deposits</span>
-                        <span className={`anonymity-indicator__level anonymity-indicator__level--${level}`}>
-                          {level === 'good' ? 'Good privacy' : level === 'moderate' ? 'Moderate' : 'Low privacy'}
-                        </span>
-                      </div>
-                    )
-                  })}
+              {/* Deposit timing selector */}
+              <div className="batch-windows">
+                <div className="batch-windows__header">
+                  <span className="batch-windows__title">Timing</span>
+                  <span className="batch-windows__hint">Schedule for more privacy</span>
                 </div>
-              )}
+                <div className="batch-windows__row">
+                  <button
+                    className={`batch-window batch-window--instant ${selectedBatchWindow === null ? 'batch-window--selected' : ''}`}
+                    onClick={() => setSelectedBatchWindow(null)}
+                  >
+                    <span className="batch-window__slot">Instant</span>
+                    <span className="batch-window__countdown">Now</span>
+                  </button>
+                  {batchWindows.map(w => (
+                    <button
+                      key={w.id}
+                      className={`batch-window ${selectedBatchWindow === w.id ? 'batch-window--selected' : ''}`}
+                      onClick={() => setSelectedBatchWindow(prev => prev === w.id ? null : w.id)}
+                    >
+                      <span className="batch-window__slot">{w.slot}</span>
+                      <span className="batch-window__countdown">{w.countdown}</span>
+                      {w.isNext && selectedBatchWindow !== w.id && <span className="batch-window__label">Next</span>}
+                    </button>
+                  ))}
+                </div>
+                {/* Per-tier pool deposits */}
+                {tx.poolNextIndices.size > 0 && (
+                  <div className="batch-windows__pools">
+                    {DENOMINATION_TIERS.map(tier => {
+                      const pool = POOL_CONTRACTS[tier.microAlgos.toString()]
+                      if (!pool) return null
+                      const count = tx.poolNextIndices.get(pool.appId) ?? 0
+                      const level = count >= 50 ? 'good' : count >= 10 ? 'moderate' : 'low'
+                      return (
+                        <div key={tier.label} className="batch-windows__pool-row">
+                          <span className="batch-windows__pool-tier">{tier.label} ALGO</span>
+                          <span className="batch-windows__pool-count">{count} deposits</span>
+                          <span className={`anonymity-indicator__level anonymity-indicator__level--${level}`}>
+                            {level === 'good' ? 'Good' : level === 'moderate' ? 'Moderate' : 'Low'}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             </>
           )}
 
@@ -378,9 +440,7 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
           {!!TREASURY_ADDRESS && (
             <div className="subsidy-selector">
               <div className="subsidy-selector__label">
-                {tx.subsidyActive
-                  ? 'Protocol fee subsidized! Pay it forward?'
-                  : 'Help grow the pool (optional)'}
+{'Help grow the pool (optional)'}
               </div>
               <div className="subsidy-selector__row">
                 <button
@@ -399,11 +459,6 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                   </button>
                 ))}
               </div>
-              {selectedSubsidy > 0n && (
-                <div className="subsidy-selector__hint">
-                  Reduces fees for the next user, attracting more deposits and strengthening privacy for everyone.
-                </div>
-              )}
             </div>
           )}
 
@@ -412,7 +467,6 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
             mode={tab === 'deposit' ? 'deposit' : 'send'}
             walletBalance={walletBalance}
             subsidyMicroAlgos={selectedSubsidy}
-            subsidyActive={tx.subsidyActive}
           />
 
           <div className="tx-flow__spacer" />
@@ -423,7 +477,9 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                 onClick={handleDeposit}
                 disabled={!canDeposit}
               >
-                Deposit {selectedTier.label} ALGO
+                {selectedBatchWindow === null
+                  ? `Deposit ${selectedTier.label} ALGO`
+                  : `Deposit ${selectedTier.label} ALGO at ${batchWindows.find(w => w.id === selectedBatchWindow)?.slot ?? ''}`}
               </button>
           ) : (
             <button
@@ -443,7 +499,16 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
       {tab === 'manage' && isIdleUI && (
         <>
           {notes.length === 0 ? (
-            <div className="manage-empty">No deposits yet</div>
+            <div className="manage-empty">
+              No deposits yet. Go to Deposit to shield your ALGO in the privacy pool.
+              <button
+                className="manage-btn manage-btn--recover"
+                style={{ marginTop: 8 }}
+                onClick={() => setTab('deposit')}
+              >
+                Go to Deposit
+              </button>
+            </div>
           ) : (
             <>
               <div className="manage-list">
@@ -472,7 +537,7 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                             autoFocus
                           />
                           {isValidManageDest && (
-                            <CostBreakdown amount={noteAlgo} mode="withdraw" subsidyActive={tx.subsidyActive} />
+                            <CostBreakdown amount={noteAlgo} mode="withdraw" />
                           )}
                           {(() => {
                             const notePool = POOL_CONTRACTS[note.denomination.toString()]
@@ -567,7 +632,7 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
           {/* Privacy address — compact inline */}
           {privacyAddress && (
             <div className="manage-compact-row">
-              <span className="manage-compact-row__label">Privacy Address</span>
+              <span className="manage-compact-row__label" title="Others can send you private notes to this address.">Privacy Address</span>
               <span className="manage-compact-row__value" title={privacyAddress}>
                 {privacyAddress.slice(0, 12)}...{privacyAddress.slice(-6)}
               </span>
@@ -580,132 +645,124 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
             </div>
           )}
 
-          {/* Collapsible: Backup & Recovery */}
-          <details className="manage-collapsible">
-            <summary className="manage-collapsible__summary">Backup & Recovery</summary>
-            <div className="manage-collapsible__content">
-              <NoteBackup notes={notes} onImport={refreshNotes} />
+          {/* Backup & Recovery */}
+          <NoteBackup notes={notes} onImport={refreshNotes} />
 
-              <div style={{ marginTop: 12 }}>
-                <button
-                  className={`manage-btn manage-btn--recover ${recovering || scanningChain ? 'manage-btn--loading' : ''}`}
-                  onClick={async () => {
-                    await handleRecover()
-                    await handleChainScan()
-                  }}
-                  disabled={recovering || scanningChain || !activeAddress}
-                  style={{ width: '100%' }}
-                >
-                  {recovering || scanningChain ? 'Scanning chain...' : 'Recover Notes from Chain'}
-                </button>
-                {recoveryResult && (
-                  <div className="manage-recovery-result">
-                    {recoveryResult.recovered > 0
-                      ? `Found ${recoveryResult.recovered} note${recoveryResult.recovered > 1 ? 's' : ''} (${recoveryResult.spent} spent)`
-                      : recoveryResult.total > 0
-                        ? `All ${recoveryResult.total} deposits already accounted for`
-                        : 'No deposits found for this wallet'}
-                  </div>
-                )}
-                {scanResult && (
-                  <div className="manage-recovery-result">
-                    {scanResult.newNotes > 0
-                      ? `Found ${scanResult.newNotes} new encrypted note${scanResult.newNotes > 1 ? 's' : ''}`
-                      : scanResult.recovered > 0
-                        ? `All on-chain notes already imported`
-                        : 'No encrypted notes found'}
-                  </div>
-                )}
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 6, lineHeight: 1.4 }}>
+            Lost your notes? Recover scans the blockchain for deposits made with your wallet. Fix Withdrawals rebuilds pool indexes if a withdrawal fails.
+          </div>
+          <div className="manage-actions-grid">
+            <button
+              className={`manage-btn manage-btn--recover ${recovering || scanningChain ? 'manage-btn--loading' : ''}`}
+              onClick={async () => {
+                await handleRecover()
+                await handleChainScan()
+              }}
+              disabled={recovering || scanningChain || !activeAddress}
+            >
+              {recovering || scanningChain ? 'Scanning...' : 'Recover Notes'}
+            </button>
+            <button
+              className={`manage-btn manage-btn--recover ${rebuildingTrees ? 'manage-btn--loading' : ''}`}
+              onClick={handleRebuildTrees}
+              disabled={rebuildingTrees}
+            >
+              {rebuildingTrees ? rebuildProgress : 'Fix Withdrawals'}
+            </button>
+          </div>
+          {recoveryResult && (
+            <div className="manage-recovery-result">
+              {recoveryResult.recovered > 0
+                ? `Found ${recoveryResult.recovered} note${recoveryResult.recovered > 1 ? 's' : ''} (${recoveryResult.spent} spent)`
+                : recoveryResult.total > 0
+                  ? `All ${recoveryResult.total} deposits already accounted for`
+                  : 'No deposits found for this wallet'}
+            </div>
+          )}
+          {scanResult && (
+            <div className="manage-recovery-result">
+              {scanResult.newNotes > 0
+                ? `Found ${scanResult.newNotes} new encrypted note${scanResult.newNotes > 1 ? 's' : ''}`
+                : scanResult.recovered > 0
+                  ? `All on-chain notes already imported`
+                  : 'No encrypted notes found'}
+            </div>
+          )}
+
+          {/* Falcon quantum-safe mode */}
+          <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 8, marginBottom: 4 }}>
+            Optional: Use Falcon-1024 signatures for quantum-resistant transactions.
+          </div>
+          <label className="tx-relayer-toggle">
+            <input
+              type="checkbox"
+              checked={falcon.enabled}
+              onChange={e => falcon.setEnabled(e.target.checked)}
+            />
+            <span>Falcon-1024 Post-Quantum Signing</span>
+          </label>
+          {falcon.enabled && falcon.loading && (
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+              Deriving Falcon keypair...
+            </div>
+          )}
+          {falcon.enabled && falcon.error && (
+            <div style={{ fontSize: 11, color: 'var(--danger)' }}>
+              {falcon.error}
+            </div>
+          )}
+          {falcon.enabled && falcon.account && (
+            <div style={{ marginTop: 6 }}>
+              <div style={{ fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all', color: 'var(--text-primary)' }}>
+                {falcon.account.address}
               </div>
-
-              <button
-                className={`manage-btn manage-btn--recover ${rebuildingTrees ? 'manage-btn--loading' : ''}`}
-                onClick={handleRebuildTrees}
-                disabled={rebuildingTrees}
-                style={{ width: '100%', marginTop: 8 }}
-              >
-                {rebuildingTrees ? rebuildProgress : 'Fix Withdrawal Errors'}
-              </button>
-            </div>
-          </details>
-
-          {/* Collapsible: Advanced */}
-          <details className="manage-collapsible">
-            <summary className="manage-collapsible__summary">Advanced</summary>
-            <div className="manage-collapsible__content">
-              {/* Falcon quantum-safe mode */}
-              <label className="tx-relayer-toggle">
-                <input
-                  type="checkbox"
-                  checked={falcon.enabled}
-                  onChange={e => falcon.setEnabled(e.target.checked)}
-                />
-                <span>Falcon-1024 Post-Quantum Signing</span>
-              </label>
-              {falcon.enabled && falcon.loading && (
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
-                  Deriving Falcon keypair...
-                </div>
-              )}
-              {falcon.enabled && falcon.error && (
-                <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8 }}>
-                  {falcon.error}
-                </div>
-              )}
-              {falcon.enabled && falcon.account && (
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all', color: 'var(--text-primary)' }}>
-                    {falcon.account.address}
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
-                    <button
-                      className="manage-btn manage-btn--copy"
-                      onClick={() => {
-                        navigator.clipboard.writeText(falcon.account!.address)
-                        addToast('success', 'Falcon address copied')
-                      }}
-                    >
-                      Copy
-                    </button>
-                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                      {(Number(falcon.balance) / 1_000_000).toFixed(3)} ALGO
-                      {falcon.funded ? '' : ' (unfunded)'}
-                    </span>
-                    <button
-                      className="manage-btn manage-btn--copy"
-                      style={{ marginLeft: 'auto' }}
-                      onClick={() => falcon.refresh()}
-                    >
-                      Refresh
-                    </button>
-                  </div>
-                  {falcon.funded && (
-                    <button
-                      className="manage-btn manage-btn--cancel"
-                      style={{ width: '100%', marginTop: 8 }}
-                      disabled={sweeping}
-                      onClick={async () => {
-                        if (!activeAddress || !falcon.account) return
-                        setSweeping(true)
-                        try {
-                          const client = algodClient ?? new algosdk.Algodv2(ALGOD_CONFIG.token, ALGOD_CONFIG.baseServer, ALGOD_CONFIG.port)
-                          await sweepFalconToWallet(client, falcon.account, activeAddress)
-                          addToast('success', 'Funds swept back to wallet')
-                          await falcon.refresh()
-                        } catch (err: any) {
-                          addToast('error', err?.message || 'Sweep failed')
-                        } finally {
-                          setSweeping(false)
-                        }
-                      }}
-                    >
-                      {sweeping ? 'Sweeping...' : 'Sweep Funds to Wallet'}
-                    </button>
-                  )}
-                </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'center' }}>
+                <button
+                  className="manage-btn manage-btn--copy"
+                  onClick={() => {
+                    navigator.clipboard.writeText(falcon.account!.address)
+                    addToast('success', 'Falcon address copied')
+                  }}
+                >
+                  Copy
+                </button>
+                <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                  {(Number(falcon.balance) / 1_000_000).toFixed(3)} ALGO
+                  {falcon.funded ? '' : ' (unfunded)'}
+                </span>
+                <button
+                  className="manage-btn manage-btn--copy"
+                  style={{ marginLeft: 'auto' }}
+                  onClick={() => falcon.refresh()}
+                >
+                  Refresh
+                </button>
+              </div>
+              {falcon.funded && (
+                <button
+                  className="manage-btn manage-btn--cancel"
+                  style={{ width: '100%', marginTop: 6 }}
+                  disabled={sweeping}
+                  onClick={async () => {
+                    if (!activeAddress || !falcon.account) return
+                    setSweeping(true)
+                    try {
+                      const client = algodClient ?? new algosdk.Algodv2(ALGOD_CONFIG.token, ALGOD_CONFIG.baseServer, ALGOD_CONFIG.port)
+                      await sweepFalconToWallet(client, falcon.account, activeAddress)
+                      addToast('success', 'Funds swept back to wallet')
+                      await falcon.refresh()
+                    } catch (err: any) {
+                      addToast('error', err?.message || 'Sweep failed')
+                    } finally {
+                      setSweeping(false)
+                    }
+                  }}
+                >
+                  {sweeping ? 'Sweeping...' : 'Sweep Funds to Wallet'}
+                </button>
               )}
             </div>
-          </details>
+          )}
         </>
       )}
 

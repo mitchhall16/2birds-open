@@ -78,10 +78,6 @@ class PrivacyPool extends Contract {
     assert(len(commitment) === 32);
     assert(len(mimcRoot) === 32);
 
-    // Enforce 15-minute batch windows: deposits only within 120s of :00/:15/:30/:45
-    const windowOffset = globals.latestTimestamp % 900;
-    assert(windowOffset <= 120 || windowOffset >= 780);
-
     // Verify insertion proof in a preceding transaction.
     // Supports two modes:
     //   1. App-based verifier (Groth16): preceding txn is an app call to insertionVerifierAppId
@@ -281,10 +277,6 @@ class PrivacyPool extends Contract {
     // Verify signal/address binding — prevents malicious relayer from redirecting funds
     assert(recipientSignal === this.addressToScalar(recipient));
     assert(relayerSignal === this.addressToScalar(relayer));
-
-    // Enforce 15-minute batch windows: deposits only within 120s of :00/:15/:30/:45
-    const windowOffset = globals.latestTimestamp % 900;
-    assert(windowOffset <= 120 || windowOffset >= 780);
 
     // Verify combined privateSend verifier call at groupIndex - 2.
     // Supports app-based (Groth16) or LogicSig (PLONK) verification.

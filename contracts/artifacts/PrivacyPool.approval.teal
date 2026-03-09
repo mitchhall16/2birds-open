@@ -263,21 +263,6 @@ deposit:
 	==
 	assert
 
-	// Enforce 15-minute batch windows: deposits only within 120s of :00/:15/:30/:45
-	// windowOffset = latestTimestamp % 900
-	// assert(windowOffset <= 120 || windowOffset >= 780)
-	global LatestTimestamp
-	pushint 900
-	%
-	dup
-	pushint 120
-	<=
-	swap
-	pushint 780
-	>=
-	||
-	assert
-
 	// contracts/privacy-pool.algo.ts:76
 	// assert(this.txn.groupIndex > 1)
 	txn GroupIndex
@@ -1235,19 +1220,6 @@ privateSend:
 	frame_dig -8 // relayerSignal: bytes
 	==
 	assert // relayerSignal must match addressToScalar(relayer)
-
-	// Enforce 15-minute batch windows: deposits only within 120s of :00/:15/:30/:45
-	global LatestTimestamp
-	pushint 900
-	%
-	dup
-	pushint 120
-	<=
-	swap
-	pushint 780
-	>=
-	||
-	assert
 
 	// contracts/privacy-pool.algo.ts:259
 	// assert(this.txn.groupIndex > 1)

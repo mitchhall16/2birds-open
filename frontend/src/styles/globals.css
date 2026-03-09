@@ -13,6 +13,13 @@
   --border: #ffffff0a;
   --border-subtle: #ffffff08;
 
+  --status-active: #60a5fa;
+  --status-proving: #c084fc;
+  --status-submitting: #fbbf24;
+  --status-waiting: #f97316;
+  --status-pending: #6b7280;
+  --status-link: #60a5fa;
+
   --font-heading: 'Clash Display', sans-serif;
   --font-body: 'IBM Plex Sans', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
@@ -34,7 +41,6 @@
 
 html, body, #root {
   height: 100%;
-  overflow: hidden;
   margin: 0;
   padding: 0;
 }

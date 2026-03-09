@@ -31,7 +31,7 @@ const walletManager = new WalletManager({
     {
       id: WalletId.WALLETCONNECT,
       options: {
-        projectId: '2e4ff65c141a7b579c4faa40fab12821',
+        projectId: import.meta.env.VITE_WC_PROJECT_ID || '2e4ff65c141a7b579c4faa40fab12821',
         themeMode: 'dark' as const,
       },
     },

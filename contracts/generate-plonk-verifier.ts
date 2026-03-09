@@ -4,14 +4,16 @@
  * PLONK LogicSig Verifier Generator for Algorand AVM v11
  *
  * Generates a TEAL LogicSig that verifies snarkjs PLONK proofs using BN254 opcodes.
- * Budget: 4 LogicSig txns × 20K pooled = 80K cost units (~42K used).
+ * Budget: 2 LogicSig txns in a 16-txn group (16K byte budget, ~15.1K used).
+ * Proof/inverses in Note fields (not LogicSig args) to minimize LogicSig size.
  *
  * Group structure:
- *   [0] Payment $0 (LogicSig) — verifier, arg0=proof, arg1=inverses
- *   [1] Payment $0 (LogicSig) — VK in Note (budget padding)
- *   [2] Payment $0 (LogicSig) — budget padding
- *   [3] Payment $0 (LogicSig) — signals in Note (pool contract reads this)
- *   [4+] User txns (payment + app call)
+ *   [0] Payment $0 (LogicSig) — verifier, Note=proof
+ *   [1] Payment $0 (relayer)  — Note=VK
+ *   [2] Payment $0 (relayer)  — Note=inverses
+ *   [3] Payment $0 (LogicSig) — signals carrier, Note=signals (pool reads this)
+ *   [4] Withdraw app call (pool checks prevTxn=[3] sender==verifier)
+ *   [5-15] Padding txns (relayer)
  *
  * Usage: npx tsx generate-plonk-verifier.ts <plonk_vkey.json> [output.teal]
  */
@@ -52,10 +54,8 @@ const R_HEX = `pushbytes ${toBE32(BN254_R)}`;
 
 /** Emit: (a * b) mod r. Leaves result on stack. */
 function emitModMul(lines: string[]) {
-  lines.push(R_HEX);
-  lines.push('swap');
   lines.push('b*');
-  lines.push('swap');
+  lines.push(R_HEX);
   lines.push('b%');
 }
 
@@ -189,29 +189,18 @@ function generatePlonkLsigTeal(vkey: PlonkVKey): string {
 
   // ═══ Group index gate ═══
   comment('=== Group structure validation ===');
-  comment('All 4 LogicSig txns must share the same sender (this program)');
-  comment('Non-index-0 txns approve only after verifying group integrity');
+  comment('Index 0: full verification. Index 3: signals carrier (budget padding).');
   L('txn GroupIndex');
   L('pushint 0');
   L('!=');
   L('bnz budget_padding');
   blank();
 
-  comment('Index 0: verify group has >= 5 txns and all 4 LogicSig senders match');
+  comment('Index 0: verify group has >= 5 txns and index 3 sender matches');
   L('global GroupSize');
   L('pushint 5');
   L('>=');
-  L('assert // group must have >= 5 txns (4 lsig + app call)');
-  blank();
-  comment('Verify gtxn 1, 2, 3 senders all equal this LogicSig address');
-  L('gtxn 1 Sender');
-  L('txn Sender');
-  L('==');
-  L('assert // gtxn 1 sender must match verifier');
-  L('gtxn 2 Sender');
-  L('txn Sender');
-  L('==');
-  L('assert // gtxn 2 sender must match verifier');
+  L('assert // group must have >= 5 txns');
   L('gtxn 3 Sender');
   L('txn Sender');
   L('==');
@@ -230,8 +219,8 @@ function generatePlonkLsigTeal(vkey: PlonkVKey): string {
   blank();
 
   // ═══ Step 2: Parse proof from arg 0 (LogicSig arg, NOT ApplicationArgs) ═══
-  comment('=== Step 2: Parse proof (768 bytes) from arg 0 ===');
-  L('arg 0');
+  comment('=== Step 2: Parse proof (768 bytes) from txn Note ===');
+  L('txn Note');
   L('dup');
   L('len');
   L('pushint 768');
@@ -272,9 +261,9 @@ function generatePlonkLsigTeal(vkey: PlonkVKey): string {
   L('store 51 // signals_bytes');
   blank();
 
-  // ═══ Step 4: Parse precomputed inverses from arg 1 ═══
-  comment(`=== Step 4: Parse ${nPublic} precomputed inverses from arg 1 ===`);
-  L('arg 1');
+  // ═══ Step 4: Parse precomputed inverses from gtxn 2 Note ═══
+  comment(`=== Step 4: Parse ${nPublic} precomputed inverses from gtxn 2 Note ===`);
+  L('gtxn 2 Note');
   L('dup');
   L('len');
   L(`pushint ${nPublic * 32}`);
@@ -825,25 +814,9 @@ function generatePlonkLsigTeal(vkey: PlonkVKey): string {
   emitPad32(lines);
   L('store 70 // u_xi_w');
 
-  // neg_e_val = r - e_val (to subtract E)
-  L(R_HEX);
-  L('load 70'); // Wait, 70 was just overwritten. Let me fix this.
-  // Actually I stored e_val in 70 earlier, but then overwrote it with u_xi_w.
-  // Let me use a different slot for e_val.
-
-  // (This is a bug in my scratch allocation. Let me fix it inline.)
-
-  // Actually, let me re-read: e_val was stored in slot 70. Then u_xi_w was also stored in slot 70.
-  // That's a conflict! Let me use slot 79 for u_xi_w and keep 70 for e_val.
-
-  // I'll back up and fix: remove the last few lines and redo.
-
-  // Actually, since I'm generating code with L(), I can't easily "back up".
-  // Let me just write it correctly. The issue is I need e_val (slot 70) AND u_xi_w.
-  // Let me store u_xi_w in slot 79 instead.
-
-  // Pop the last 3 lines (u_xi_w store) and redo
-  lines.pop(); // 'store 70 // u_xi_w'
+  // Fix: u_xi_w was stored to slot 70, but e_val is already in slot 70.
+  // Pop the store and use slot 79 for u_xi_w instead.
+  lines.pop(); // remove 'store 70 // u_xi_w'
   L('store 79 // u_xi_w');
 
   // neg_e_val = r - e_val
@@ -851,19 +824,18 @@ function generatePlonkLsigTeal(vkey: PlonkVKey): string {
   L('load 70 // e_val');
   L('b-');
   emitPad32(lines);
+  L('store 78 // neg_e_val');
 
   // BN254 G1 generator = (1, 2)
   const G1_GEN = '0x' + '00'.repeat(31) + '01' + '00'.repeat(31) + '02';
 
-  // Points: Wxi || Wxiw || F || G1_gen
+  // Points (A, second on stack): Wxi || Wxiw || F || G1_gen
   L('load 13 // Wxi');
   L('load 14 // Wxiw'); L('concat');
   L('load 61 // F'); L('concat');
   L(`pushbytes ${G1_GEN} // G1 generator`); L('concat');
 
-  // Scalars: xi || u_xi_w || 1 || neg_e_val (on stack from above)
-  // We need to build the scalar buffer. neg_e_val is on stack.
-  L('store 78 // neg_e_val temp');
+  // Scalars (B, top of stack): xi || u_xi_w || 1 || neg_e_val
   L('load 35 // xi');
   L('load 79 // u_xi_w'); L('concat');
   L(`pushbytes ${toBE32(1n)}`); L('concat');
@@ -901,22 +873,21 @@ function generatePlonkLsigTeal(vkey: PlonkVKey): string {
   L('return');
   blank();
 
-  comment('Budget padding txns (index 1, 2, 3): approve only if index 0 is same program');
+  // ═══ Budget padding (index 3): signals carrier ═══
+  comment('Budget padding txn (index 3): approve if index 0 is same program');
   L('budget_padding:');
-  comment('Verify gtxn 0 sender matches our sender (same LogicSig program)');
   L('gtxn 0 Sender');
   L('txn Sender');
   L('==');
-  L('assert // budget txn must be grouped with verifier at index 0');
-  comment('Verify this is a zero-amount self-payment (no fund extraction)');
+  L('assert // must be grouped with verifier at index 0');
   L('txn Amount');
   L('pushint 0');
   L('==');
-  L('assert // budget txn must be zero amount');
+  L('assert // must be zero amount');
   L('txn Receiver');
   L('txn Sender');
   L('==');
-  L('assert // budget txn must be self-payment');
+  L('assert // must be self-payment');
   L('pushint 1');
   L('return');
 

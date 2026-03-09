@@ -6,7 +6,6 @@ interface CostBreakdownProps {
   mode?: 'deposit' | 'send' | 'withdraw'
   walletBalance?: number
   subsidyMicroAlgos?: bigint
-  subsidyActive?: boolean
 }
 
 /** Format microAlgos with fixed 3 decimal places (no trailing zero stripping) */
@@ -43,19 +42,11 @@ function WalletRow({ balance }: { balance?: number }) {
 
 const showProtocolFee = !!TREASURY_ADDRESS && PROTOCOL_FEE > 0n
 
-function ProtocolFeeRow({ subsidyActive }: { subsidyActive?: boolean }) {
+function ProtocolFeeRow() {
   if (!showProtocolFee) return null
-  if (subsidyActive) {
-    return (
-      <div className="cost-row">
-        <span className="cost-row__label">Protocol fee <FeeTooltip text="Covered by the community subsidy pool. Someone paid it forward!" /></span>
-        <span className="cost-row__value cost-row__value--subsidized">FREE</span>
-      </div>
-    )
-  }
   return (
     <div className="cost-row">
-      <span className="cost-row__label">Protocol fee <FeeTooltip text="Small fee that funds the community subsidy pool, reducing fees for future users and improving privacy for everyone." /></span>
+      <span className="cost-row__label">Protocol fee <FeeTooltip text="Funds the subsidy pool for future fee reductions." /></span>
       <span className="cost-row__value">{feeAlgo(PROTOCOL_FEE)} ALGO</span>
     </div>
   )
@@ -65,7 +56,7 @@ function SubsidyRow({ subsidyMicroAlgos }: { subsidyMicroAlgos?: bigint }) {
   if (!subsidyMicroAlgos || subsidyMicroAlgos <= 0n || !TREASURY_ADDRESS) return null
   return (
     <div className="cost-row">
-      <span className="cost-row__label">Community subsidy <FeeTooltip text="Your contribution reduces fees for the next user, encouraging more deposits and strengthening everyone's privacy." /></span>
+      <span className="cost-row__label">Pay it forward <FeeTooltip text="You're adding to the subsidy pool. This covers the protocol fee for the next user." /></span>
       <span className="cost-row__value cost-row__value--subsidy">{feeAlgo(subsidyMicroAlgos)} ALGO</span>
     </div>
   )
@@ -73,7 +64,7 @@ function SubsidyRow({ subsidyMicroAlgos }: { subsidyMicroAlgos?: bigint }) {
 
 const protocolFeeAmount = showProtocolFee ? PROTOCOL_FEE : 0n
 
-export function CostBreakdown({ amount = 1, mode = 'send', walletBalance, subsidyMicroAlgos, subsidyActive }: CostBreakdownProps) {
+export function CostBreakdown({ amount = 1, mode = 'send', walletBalance, subsidyMicroAlgos }: CostBreakdownProps) {
   const amountMicro = BigInt(Math.round(amount * 1_000_000))
   const subsidy = subsidyMicroAlgos ?? 0n
 
@@ -90,7 +81,7 @@ export function CostBreakdown({ amount = 1, mode = 'send', walletBalance, subsid
           <span className="cost-row__label">Network fees <FeeTooltip text={FEE_TIPS.deposit} /></span>
           <span className="cost-row__value">{feeAlgo(FEES.deposit)} ALGO</span>
         </div>
-        <ProtocolFeeRow subsidyActive={subsidyActive} />
+        <ProtocolFeeRow />
         <SubsidyRow subsidyMicroAlgos={subsidyMicroAlgos} />
         <div className="cost-row cost-row--total">
           <span className="cost-row__label">Total from wallet</span>
@@ -112,7 +103,7 @@ export function CostBreakdown({ amount = 1, mode = 'send', walletBalance, subsid
           <span className="cost-row__label">Network fees <FeeTooltip text={`ZK proof verification with ~211 inner calls (${feeAlgo(FEES.withdrawVerifierCall)}) + pool withdrawal (0.002) = ${feeAlgo(FEES.withdraw)} ALGO`} /></span>
           <span className="cost-row__value">{feeAlgo(FEES.withdraw)} ALGO</span>
         </div>
-        <ProtocolFeeRow subsidyActive={subsidyActive} />
+        <ProtocolFeeRow />
         <div className="cost-row cost-row--total">
           <span className="cost-row__label">Recipient gets</span>
           <span className="cost-row__value">{formatAlgo(amountMicro)} ALGO</span>
@@ -133,7 +124,7 @@ export function CostBreakdown({ amount = 1, mode = 'send', walletBalance, subsid
         <span className="cost-row__label">Network fees <FeeTooltip text={FEE_TIPS.send} /></span>
         <span className="cost-row__value">{feeAlgo(FEES.privateSend)} ALGO</span>
       </div>
-      <ProtocolFeeRow subsidyActive={subsidyActive} />
+      <ProtocolFeeRow />
       <SubsidyRow subsidyMicroAlgos={subsidyMicroAlgos} />
       <div className="cost-row cost-row--total">
         <span className="cost-row__label">Total from wallet</span>

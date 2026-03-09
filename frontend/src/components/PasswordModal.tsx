@@ -22,6 +22,16 @@ export function PasswordModal({ open, mode, onSubmit, onCancel, externalError }:
     }
   }, [open])
 
+  // Escape key closes modal
+  useEffect(() => {
+    if (!open) return
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onCancel()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [open, onCancel])
+
   if (!open) return null
 
   function handleSubmit(e: React.FormEvent) {
@@ -56,6 +66,12 @@ export function PasswordModal({ open, mode, onSubmit, onCancel, externalError }:
             : 'Enter your password to decrypt your deposit notes.'}
         </p>
 
+        {mode === 'unlock' && (
+          <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 16, lineHeight: 1.5, opacity: 0.8 }}>
+            This is the password you chose when you first connected this wallet. There is no way to recover it — if lost, your encrypted notes are permanently inaccessible.
+          </p>
+        )}
+
         <form onSubmit={handleSubmit}>
           <div className="tx-field" style={{ marginBottom: 12 }}>
             <label className="tx-field__label">Password</label>
@@ -64,7 +80,7 @@ export function PasswordModal({ open, mode, onSubmit, onCancel, externalError }:
               type="password"
               value={password}
               onChange={e => setPassword(e.target.value)}
-              placeholder="Min 8 characters"
+              placeholder="Min 12 characters"
               autoFocus
               autoComplete="off"
             />

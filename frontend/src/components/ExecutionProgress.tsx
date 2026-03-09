@@ -26,13 +26,13 @@ const STATUS_ICONS: Record<StepStatus, string> = {
 }
 
 const STATUS_COLORS: Record<StepStatus, string> = {
-  done: '#34d399',
-  active: '#60a5fa',
-  proving: '#c084fc',
-  submitting: '#fbbf24',
-  waiting_batch: '#f97316',
-  pending: '#6b7280',
-  error: '#ef4444',
+  done: 'var(--success)',
+  active: 'var(--status-active)',
+  proving: 'var(--status-proving)',
+  submitting: 'var(--status-submitting)',
+  waiting_batch: 'var(--status-waiting)',
+  pending: 'var(--status-pending)',
+  error: 'var(--danger)',
 }
 
 const STATUS_LABELS: Record<StepStatus, string> = {
@@ -52,15 +52,15 @@ export function ExecutionProgress({ steps, onSkipBatch }: ExecutionProgressProps
 
   return (
     <div className="execution-progress" style={{
-      background: 'rgba(15, 15, 25, 0.8)',
-      border: '1px solid rgba(100, 100, 140, 0.2)',
-      borderRadius: '12px',
+      background: 'var(--bg-surface)',
+      border: '1px solid var(--border)',
+      borderRadius: 'var(--radius-md)',
       padding: '16px',
     }}>
       {/* Progress bar */}
       <div style={{
         height: '3px',
-        background: 'rgba(100, 100, 140, 0.2)',
+        background: 'var(--border)',
         borderRadius: '2px',
         marginBottom: '12px',
         overflow: 'hidden',
@@ -68,13 +68,13 @@ export function ExecutionProgress({ steps, onSkipBatch }: ExecutionProgressProps
         <div style={{
           height: '100%',
           width: `${progress}%`,
-          background: 'linear-gradient(90deg, #60a5fa, #34d399)',
+          background: `linear-gradient(90deg, var(--status-active), var(--success))`,
           borderRadius: '2px',
           transition: 'width 0.5s ease',
         }} />
       </div>
 
-      <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '8px' }}>
+      <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
         {completed}/{total} steps complete
       </div>
 
@@ -86,7 +86,7 @@ export function ExecutionProgress({ steps, onSkipBatch }: ExecutionProgressProps
             alignItems: 'center',
             gap: '10px',
             padding: '8px 4px',
-            borderBottom: i < steps.length - 1 ? '1px solid rgba(100, 100, 140, 0.1)' : 'none',
+            borderBottom: i < steps.length - 1 ? '1px solid var(--border-subtle)' : 'none',
             opacity: step.status === 'pending' ? 0.5 : 1,
           }}
         >
@@ -101,7 +101,7 @@ export function ExecutionProgress({ steps, onSkipBatch }: ExecutionProgressProps
           </span>
 
           <span style={{
-            color: '#9ca3af',
+            color: 'var(--text-secondary)',
             fontSize: '11px',
             minWidth: '42px',
           }}>
@@ -109,7 +109,7 @@ export function ExecutionProgress({ steps, onSkipBatch }: ExecutionProgressProps
           </span>
 
           <span style={{
-            color: step.status === 'done' ? '#d1d5db' : '#e5e7eb',
+            color: 'var(--text-primary)',
             fontSize: '13px',
             flex: 1,
           }}>
@@ -122,12 +122,12 @@ export function ExecutionProgress({ steps, onSkipBatch }: ExecutionProgressProps
                 href={txnUrl(step.txId)}
                 target="_blank"
                 rel="noopener noreferrer"
-                style={{ color: '#60a5fa', textDecoration: 'none' }}
+                style={{ color: 'var(--status-link)', textDecoration: 'none' }}
               >
                 {step.txId.slice(0, 8)}...
               </a>
             ) : step.error ? (
-              <span style={{ color: '#ef4444' }}>{step.error}</span>
+              <span style={{ color: 'var(--danger)' }}>{step.error}</span>
             ) : (
               <span style={{ color: STATUS_COLORS[step.status] }}>
                 {STATUS_LABELS[step.status]}
@@ -137,14 +137,14 @@ export function ExecutionProgress({ steps, onSkipBatch }: ExecutionProgressProps
 
           {step.status === 'waiting_batch' && step.batchCountdown && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
-              <span style={{ color: '#f97316' }}>{step.batchCountdown}</span>
+              <span style={{ color: 'var(--status-waiting)' }}>{step.batchCountdown}</span>
               {onSkipBatch && (
                 <button
                   onClick={onSkipBatch}
                   style={{
-                    background: 'rgba(249, 115, 22, 0.15)',
-                    border: '1px solid rgba(249, 115, 22, 0.3)',
-                    color: '#f97316',
+                    background: 'color-mix(in srgb, var(--status-waiting) 15%, transparent)',
+                    border: '1px solid color-mix(in srgb, var(--status-waiting) 30%, transparent)',
+                    color: 'var(--status-waiting)',
                     padding: '2px 8px',
                     borderRadius: '4px',
                     cursor: 'pointer',
