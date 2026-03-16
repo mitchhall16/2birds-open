@@ -97,10 +97,54 @@ PLONK verifier addresses are permanently locked on each pool via one-shot `setPl
 
 ```bash
 npm install
+cp .env.example .env                # add your deployer mnemonic
+cp frontend/.env.example frontend/.env  # add your WalletConnect project ID
+```
+
+```bash
 cd frontend && npm run build                                          # build frontend
 cd frontend && npx wrangler pages deploy dist --project-name 2birds   # deploy
 cd relayer && npm run deploy                                          # deploy relayer
 ```
+
+### Environment variables
+
+**Root `.env`** (for deploy scripts):
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DEPLOYER_MNEMONIC` | Yes | 25-word Algorand mnemonic for deploying contracts |
+| `DEPLOYER_ADDRESS` | Yes | Corresponding Algorand address |
+| `ALGOD_URL` | No | Algod endpoint (defaults to algonode testnet) |
+
+**Frontend `frontend/.env`**:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `VITE_WC_PROJECT_ID` | Yes | WalletConnect v2 project ID — get one free at [cloud.walletconnect.com](https://cloud.walletconnect.com) |
+| `VITE_NETWORK` | No | `testnet` (default) or `mainnet` |
+| `VITE_USE_PLONK_LSIG` | No | `true` (default) — use cheaper PLONK verification |
+| `VITE_RELAYER_1_URL` | No | Override relayer 1 URL (for self-hosted relayers) |
+| `VITE_RELAYER_1_ADDRESS` | No | Algorand address of relayer 1 |
+| `VITE_RELAYER_2_URL` | No | Override relayer 2 URL |
+| `VITE_RELAYER_2_ADDRESS` | No | Algorand address of relayer 2 |
+
+**Relayer** (set via `wrangler secret put`, not in config files):
+
+| Secret | Description |
+|--------|-------------|
+| `RELAYER_MNEMONIC` | 25-word Algorand mnemonic for the relayer wallet |
+| `OPERATOR_API_KEY` | Bearer token for `/api/process-refund` — generate with `openssl rand -hex 32` |
+
+### Running your own relayer
+
+1. `cd relayer && npm install`
+2. Create a KV namespace: `wrangler kv namespace create RELAY_KV`
+3. Paste the namespace ID into `wrangler.toml`
+4. Set secrets: `wrangler secret put RELAYER_MNEMONIC` and `wrangler secret put OPERATOR_API_KEY`
+5. Fund the relayer Algorand address with testnet ALGO
+6. Deploy: `npm run deploy`
+7. Set `VITE_RELAYER_1_URL` and `VITE_RELAYER_1_ADDRESS` in your frontend `.env` to point to your relayer
 
 ---
 
