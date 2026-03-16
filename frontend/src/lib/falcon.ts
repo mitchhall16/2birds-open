@@ -1,12 +1,17 @@
 /**
  * Falcon-1024 Post-Quantum Signing for Algorand LogicSig
  *
- * Provides deterministic Falcon keypair derivation from master key,
- * TEAL LogicSig compilation (AVM v12), and transaction signing.
+ * Uses Algorand's Deterministic Falcon-1024 (algorand/falcon) — NOT the
+ * standard PQClean Falcon. The AVM's falcon_verify opcode only accepts
+ * deterministic-mode signatures (header 0xBA, 1-byte salt version, no nonce).
  *
  * The Falcon public key is embedded in a small TEAL program → LogicSig contract account.
  * That address becomes the user's quantum-safe address. All pool operations are signed
  * by Falcon locally — no wallet popup needed.
+ *
+ * LogicSig size (~3KB) exceeds the per-txn 1000-byte limit, so every Falcon-signed
+ * transaction must be in an atomic group with 3 dummy "int 1" LogicSig txns to pool
+ * the budget (4 × 1000 = 4000 bytes).
  */
 
 import algosdk from 'algosdk'
@@ -53,10 +58,13 @@ function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
-/** Lazy-load falcon-crypto (WASM, ~500KB). Only loaded when Falcon mode is enabled. */
+/**
+ * Lazy-load Algorand's Deterministic Falcon-1024 WASM.
+ * Built from github.com/algorand/falcon via Emscripten.
+ */
 async function loadFalcon() {
-  const mod = await import('falcon-crypto')
-  return (mod as any).default ?? (mod as any).falcon ?? mod
+  const mod = await import('./falcon-det/index.js')
+  return mod
 }
 
 // ── Key Derivation ──
@@ -64,8 +72,8 @@ async function loadFalcon() {
 /**
  * Derive a deterministic Falcon-1024 keypair from a master key.
  *
- * Uses HKDF(SHA-256) to derive a seed, then AES-CTR to expand it into a
- * deterministic byte stream that replaces crypto.getRandomValues during keygen.
+ * Uses HKDF(SHA-256) to derive a 48-byte seed, which is passed to
+ * the deterministic Falcon keygen (SHAKE256-seeded PRNG).
  * Same master key → same keypair → same LogicSig address on any device.
  */
 export async function deriveFalconKeypair(masterKey: bigint): Promise<{
@@ -76,8 +84,7 @@ export async function deriveFalconKeypair(masterKey: bigint): Promise<{
 
   const masterKeyBytes = scalarToBytes(masterKey)
 
-  // Derive 48-byte seed via HKDF: 32 for AES key + 16 for IV
-  // Use a proper domain-specific salt (SHA-256 of a fixed string)
+  // Derive 48-byte seed via HKDF
   const hkdfSalt = new Uint8Array(await crypto.subtle.digest(
     'SHA-256', new TextEncoder().encode('privacy-pool-falcon-salt-v1'),
   ))
@@ -94,57 +101,13 @@ export async function deriveFalconKeypair(masterKey: bigint): Promise<{
   )
   const seed = new Uint8Array(seedBits)
 
-  // Pre-generate deterministic random bytes using AES-CTR
-  // Falcon-1024 keygen needs ~10KB of randomness; allocate 100KB to be safe
-  const aesKey = await crypto.subtle.importKey(
-    'raw', seed.slice(0, 32), { name: 'AES-CTR' }, false, ['encrypt'],
-  )
-  const iv = new Uint8Array(16)
-  iv.set(seed.slice(32, 48))
-  const randomPool = new Uint8Array(
-    await crypto.subtle.encrypt(
-      { name: 'AES-CTR', counter: iv, length: 128 },
-      aesKey,
-      new Uint8Array(100_000),
-    ),
-  )
-
-  // Pre-load Falcon WASM before overriding crypto.getRandomValues
-  // This prevents the dynamic import's await from yielding to the microtask queue
-  // while crypto is monkey-patched (which would give concurrent code deterministic bytes)
+  // Deterministic Falcon keygen uses the seed directly (SHAKE256-seeded PRNG internally)
   const falcon = await loadFalcon()
+  const keypair = await falcon.keyPairFromSeed(seed)
 
-  // Temporarily replace crypto.getRandomValues with seeded deterministic version
-  // Window is now minimal: only the synchronous keyPair() call runs under the override
-  let poolOffset = 0
-  const originalGRV = crypto.getRandomValues.bind(crypto)
-
-  Object.defineProperty(crypto, 'getRandomValues', {
-    value: <T extends ArrayBufferView>(array: T): T => {
-      const u8 = new Uint8Array(array.buffer, array.byteOffset, array.byteLength)
-      if (poolOffset + u8.length > randomPool.length) {
-        throw new Error('Seeded RNG exhausted during Falcon keygen')
-      }
-      u8.set(randomPool.subarray(poolOffset, poolOffset + u8.length))
-      poolOffset += u8.length
-      return array
-    },
-    writable: true,
-    configurable: true,
-  })
-
-  try {
-    const keypair = await falcon.keyPair()
-    _cachedKeypair = keypair
-    _cachedMasterKey = masterKey
-    return keypair
-  } finally {
-    Object.defineProperty(crypto, 'getRandomValues', {
-      value: originalGRV,
-      writable: true,
-      configurable: true,
-    })
-  }
+  _cachedKeypair = keypair
+  _cachedMasterKey = masterKey
+  return keypair
 }
 
 // ── TEAL Compilation ──
@@ -152,26 +115,23 @@ export async function deriveFalconKeypair(masterKey: bigint): Promise<{
 /**
  * Compile a Falcon-1024 LogicSig TEAL program with embedded public key.
  *
- * The TEAL program verifies that arg[0] is a valid Falcon-1024 signature
- * of `txn TxID` under the embedded public key. Requires AVM v12.
+ * The TEAL program verifies that arg[0] is a valid deterministic Falcon-1024
+ * signature of `txn TxID` under the embedded public key. Requires AVM v12.
  *
- * Program size: ~1813 bytes (1793 pubkey + 20 TEAL opcodes)
- * LogicSig with signature: ~3093 bytes (program + ~1280 byte Falcon sig)
- * falcon_verify cost: 1700 opcodes out of 20,000 budget
+ * Program size: ~1801 bytes (1793 pubkey + ~8 TEAL opcodes)
+ * LogicSig with arg: ~3030 bytes (program + ~1230 byte Falcon sig in arg[0])
+ * Requires atomic group of 4 txns for LogicSig pool budget (4 × 1000 = 4000).
  */
 export async function compileFalconProgram(
   client: algosdk.Algodv2,
   pubkey: Uint8Array,
 ): Promise<{ program: Uint8Array; address: string }> {
-  // Validate cache matches the provided pubkey (prevents stale program after wallet switch)
   if (_cachedProgram && _cachedAddress && _cachedPubkeyHex === bytesToHex(pubkey)) {
     return { program: _cachedProgram, address: _cachedAddress }
   }
 
   const pubkeyHex = bytesToHex(pubkey)
 
-  // AVM v12 TEAL: verify Falcon-1024 signature over transaction ID
-  // Stack: [txn TxID (data), arg 0 (sig), pushbytes (pubkey)] → falcon_verify → bool
   const tealSource = [
     '#pragma version 12',
     'txn TxID',
@@ -205,8 +165,10 @@ export async function compileFalconProgram(
  * Create a transaction signer using a Falcon LogicSig.
  * Drop-in replacement for wallet transactionSigner.
  *
- * Signs each transaction's TxID with Falcon-1024 and wraps in a LogicSig.
- * Signing is instant — no wallet popup or user interaction needed.
+ * Signs each transaction's TxID with deterministic Falcon-1024.
+ * When used within PLONK groups (16 txns), the LogicSig pool budget
+ * is already sufficient. For smaller groups, the caller should add
+ * padding txns (see signFalconTransaction).
  */
 export function createFalconSigner(
   program: Uint8Array,
@@ -217,11 +179,8 @@ export function createFalconSigner(
     const result: Uint8Array[] = new Array(txns.length).fill(new Uint8Array(0))
 
     for (const idx of indices) {
-      // Get raw 32-byte transaction ID (matches what `txn TxID` pushes in TEAL)
       const rawTxId = base32Decode(txns[idx].txID())
-      // Sign with Falcon-1024
       const sig = await falcon.signDetached(rawTxId, privateKey)
-      // Wrap in LogicSig with signature as arg[0]
       const lsig = new algosdk.LogicSigAccount(program, [sig])
       result[idx] = algosdk.signLogicSigTransaction(txns[idx], lsig).blob
     }
@@ -231,33 +190,81 @@ export function createFalconSigner(
 }
 
 /**
+ * Wrap a Falcon-signed transaction in an atomic group with 3 padding txns.
+ * Required because the Falcon LogicSig (~3KB) exceeds the per-txn 1000-byte limit.
+ * The pool budget is 1000 × groupSize, so 4 txns = 4000 byte budget.
+ *
+ * Padding txns are zero-amount self-payments from the Falcon address itself
+ * (no separate dummy address needed). The main txn covers all fees (fee = 4000).
+ *
+ * Returns the full signed group ready for sendRawTransaction.
+ */
+export async function signFalconTransaction(
+  client: algosdk.Algodv2,
+  mainTxn: algosdk.Transaction,
+  account: FalconAccount,
+): Promise<{ signedGroup: Uint8Array[]; txId: string }> {
+  const falcon = await loadFalcon()
+  const params = await client.getTransactionParams().do()
+
+  // Override main txn fee to cover all 4 txns
+  mainTxn.fee = BigInt(4000)
+
+  // Create 3 padding self-payments from the Falcon address (fee=0)
+  const padding: algosdk.Transaction[] = []
+  for (let i = 0; i < 3; i++) {
+    padding.push(algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+      sender: account.address,
+      receiver: account.address,
+      amount: 0,
+      suggestedParams: { ...params, fee: BigInt(0), flatFee: true },
+      note: new TextEncoder().encode(`pad-${i}`),
+    }))
+  }
+
+  // Assign group
+  const group = [mainTxn, ...padding]
+  algosdk.assignGroupID(group)
+
+  // Sign all txns with Falcon (after group assignment — TxIDs change)
+  const signedTxns: Uint8Array[] = []
+  for (const txn of group) {
+    const rawTxId = base32Decode(txn.txID())
+    const sig = await falcon.signDetached(rawTxId, account.privateKey)
+    const lsig = new algosdk.LogicSigAccount(account.program, [sig])
+    signedTxns.push(algosdk.signLogicSigTransaction(txn, lsig).blob)
+  }
+
+  return {
+    signedGroup: signedTxns,
+    txId: group[0].txID(),
+  }
+}
+
+/**
  * Sweep all funds from the Falcon address back to the wallet address.
  * Uses closeRemainderTo to reclaim the full balance including min balance.
+ * Wraps in atomic group with dummy txns for LogicSig budget.
  */
 export async function sweepFalconToWallet(
   client: algosdk.Algodv2,
   account: FalconAccount,
   walletAddress: string,
 ): Promise<string> {
-  const falcon = await loadFalcon()
   const params = await client.getTransactionParams().do()
 
   const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
     sender: account.address,
     receiver: walletAddress,
     amount: 0,
-    suggestedParams: params,
+    suggestedParams: { ...params, fee: BigInt(4000), flatFee: true },
     closeRemainderTo: walletAddress,
   })
 
-  const rawTxId = base32Decode(txn.txID())
-  const sig = await falcon.signDetached(rawTxId, account.privateKey)
-  const lsig = new algosdk.LogicSigAccount(account.program, [sig])
-  const signed = algosdk.signLogicSigTransaction(txn, lsig)
-
-  await client.sendRawTransaction(signed.blob).do()
-  await algosdk.waitForConfirmation(client, signed.txID, 4)
-  return signed.txID
+  const { signedGroup, txId } = await signFalconTransaction(client, txn, account)
+  await client.sendRawTransaction(signedGroup).do()
+  await algosdk.waitForConfirmation(client, txId, 4)
+  return txId
 }
 
 /** Clear cached Falcon state (called on wallet disconnect). */

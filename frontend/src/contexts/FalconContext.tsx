@@ -40,6 +40,8 @@ interface FalconContextValue {
   derive: (masterKey: bigint) => Promise<DeriveResult | null>
   /** Refresh balance from algod. */
   refresh: () => Promise<void>
+  /** Fund the Falcon address from the connected wallet. */
+  fundFalcon: (walletSigner: (txns: algosdk.Transaction[], indices: number[]) => Promise<Uint8Array[]>, walletAddress: string, amount?: bigint) => Promise<string>
   /** Transaction signer using Falcon LogicSig (null if not derived yet). */
   signer: ((txns: algosdk.Transaction[], indices: number[]) => Promise<Uint8Array[]>) | null
 }
@@ -144,6 +146,34 @@ export function FalconProvider({ children }: { children: ReactNode }) {
     }
   }, [account, getClient])
 
+  const fundFalcon = useCallback(
+    async (
+      walletSigner: (txns: algosdk.Transaction[], indices: number[]) => Promise<Uint8Array[]>,
+      walletAddress: string,
+      amount: bigint = 500_000n, // 0.5 ALGO default
+    ): Promise<string> => {
+      if (!account) throw new Error('Falcon account not derived yet')
+      const client = getClient()
+      const params = await client.getTransactionParams().do()
+      const txn = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: walletAddress,
+        receiver: account.address,
+        amount,
+        suggestedParams: params,
+      })
+      const signed = await walletSigner([txn], [0])
+      await client.sendRawTransaction(signed[0]).do()
+      await algosdk.waitForConfirmation(client, txn.txID(), 4)
+      // Refresh balance after funding
+      const info = await client.accountInformation(account.address).do()
+      const bal = BigInt(info.amount)
+      setBalance(bal)
+      setFunded(bal > 100_000n)
+      return txn.txID()
+    },
+    [account, getClient],
+  )
+
   const signer = account
     ? createFalconSigner(account.program, account.privateKey)
     : null
@@ -160,6 +190,7 @@ export function FalconProvider({ children }: { children: ReactNode }) {
         setEnabled,
         derive,
         refresh,
+        fundFalcon,
         signer,
       }}
     >

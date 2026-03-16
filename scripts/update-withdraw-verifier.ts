@@ -19,8 +19,8 @@ const NEW_WITHDRAW_ADDR = 'XXN3WO7QABM7X65RMPD4WXFWXOVUICQCBP3OZ7DYXVON6HNGIZSAL
 // Pool contracts to update
 const POOLS = [
   { label: '0.1 ALGO', appId: 756770804 },
-  { label: '0.5 ALGO', appId: 756478549 },
-  { label: '1.0 ALGO', appId: 756480627 },
+  { label: '0.5 ALGO', appId: 756862750 },
+  { label: '1.0 ALGO', appId: 756862851 },
 ];
 
 function methodSelector(sig: string): Uint8Array {

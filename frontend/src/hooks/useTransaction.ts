@@ -6,6 +6,7 @@ import { useFalcon, type DeriveResult } from '../contexts/FalconContext'
 import { createFalconSigner } from '../lib/falcon'
 import { useToast } from '../contexts/ToastContext'
 import { humanizeError, withRetry } from '../lib/errorMessages'
+import { cachedGetApp, cachedGetAccount, invalidateCache } from '../lib/algodCache'
 import {
   initMimc,
   deriveDeposit,
@@ -327,7 +328,7 @@ export function useTransaction(): UseTransactionReturn {
 
   /** Read contract global state (with network retry) */
   async function readContractState(client: algosdk.Algodv2, appId: number) {
-    const appInfo = await withRetry(() => client.getApplicationByID(appId).do())
+    const appInfo = await withRetry(() => cachedGetApp(client, appId))
     const globalState = (appInfo as any).params?.globalState || (appInfo as any).params?.['global-state'] || []
 
     let currentRoot = new Uint8Array(32)
@@ -411,7 +412,7 @@ export function useTransaction(): UseTransactionReturn {
   async function readTreasuryBalance(client: algosdk.Algodv2): Promise<bigint> {
     if (!TREASURY_ADDRESS) return 0n
     try {
-      const info = await client.accountInformation(TREASURY_ADDRESS).do()
+      const info = await cachedGetAccount(client, TREASURY_ADDRESS)
       const balance = BigInt(info.amount)
       const minBalance = BigInt(info.minBalance ?? 100_000)
       return balance > minBalance ? balance - minBalance : 0n
@@ -420,15 +421,21 @@ export function useTransaction(): UseTransactionReturn {
     }
   }
 
-  /** Fetch pool nextIndex values for all active pools (with network retry) */
+  /** Fetch pool nextIndex values for all active pools (parallel, with network retry) */
   async function fetchPoolNextIndices(client: algosdk.Algodv2): Promise<Map<number, number>> {
     const indices = new Map<number, number>()
-    for (const pool of Object.values(POOL_CONTRACTS)) {
-      try {
+    const pools = Object.values(POOL_CONTRACTS)
+    const results = await Promise.allSettled(
+      pools.map(async pool => {
         const state = await withRetry(() => readContractState(client, pool.appId))
-        indices.set(pool.appId, state.nextIndex)
-      } catch {
-        // Skip pools that fail
+        return { appId: pool.appId, nextIndex: state.nextIndex }
+      })
+    )
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        indices.set(result.value.appId, result.value.nextIndex)
+      } else {
+        console.warn('[poolNextIndices] Failed to read pool:', result.reason)
       }
     }
     return indices
@@ -651,7 +658,8 @@ export function useTransaction(): UseTransactionReturn {
 
     let txId: string
 
-    const viaRelayer = useRelayerState && relayerAvailable
+    // Skip relayer when Falcon is active — Falcon address is already pseudonymous
+    const viaRelayer = useRelayerState && relayerAvailable && !(falcon.enabled && falcon.funded)
     if (viaRelayer) {
       // Deposit via relayer — hides depositor's address on-chain
       const chosenRelayer = pickRelayer()
@@ -891,6 +899,7 @@ export function useTransaction(): UseTransactionReturn {
 
       await saveNote(note)
       recordOperation('deposit')
+      invalidateCache()
 
       addToast('success', `Deposited ${amountAlgo} ALGO into the privacy pool`)
       const updatedNotes = await loadNotes()
@@ -1153,12 +1162,13 @@ export function useTransaction(): UseTransactionReturn {
       }
 
       // Privacy warning: direct withdrawal links sender wallet to withdrawal destination
-      if (!useRelayerState || !relayerAvailable) {
+      // (Falcon mode is already pseudonymous — no warning needed)
+      if ((!useRelayerState || !relayerAvailable) && !isFalcon) {
         addToast('error', 'Direct withdrawal: your wallet address will be visible on-chain, linking you to this withdrawal. Enable relayer mode for full privacy.')
       }
 
       // Optional batch delay — multiple withdrawals in the same window are harder to correlate
-      if (useRelayerState && relayerAvailable) {
+      if (useRelayerState && relayerAvailable && !isFalcon) {
         await awaitBatchWindow()
       }
 
@@ -1193,7 +1203,8 @@ export function useTransaction(): UseTransactionReturn {
       const zkeyFile = USE_PLONK_LSIG ? '/circuits/withdraw_plonk.zkey' : '/circuits/withdraw_final.zkey'
 
       const nullifierHash = computeNullifierHash(note.nullifier)
-      const viaRelayer = useRelayerState && relayerAvailable
+      // Skip relayer when Falcon is active — Falcon address is already pseudonymous
+      const viaRelayer = useRelayerState && relayerAvailable && !isFalcon
       const chosenRelayer = viaRelayer ? pickRelayer() : null
       const relayerAddr = chosenRelayer ? chosenRelayer.address : 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY5HFKQ'
       const relayerFee = chosenRelayer ? chosenRelayer.fee : 0n
@@ -1363,6 +1374,7 @@ export function useTransaction(): UseTransactionReturn {
 
       const algoAmount = (Number(note.denomination) / 1_000_000).toFixed(6).replace(/\.?0+$/, '')
       recordOperation('withdraw')
+      invalidateCache()
       addToast('success', `Withdrew ${algoAmount} ALGO to destination`)
       const wNotes = await loadNotes()
       setState(s => ({
@@ -1406,7 +1418,8 @@ export function useTransaction(): UseTransactionReturn {
 
     const merklePath = getPath(tree, leafIndex)
     const nullifierHash = computeNullifierHash(note.nullifier)
-    const viaRelayer = useRelayerState && relayerAvailable
+    // Skip relayer when Falcon is active — Falcon address is already pseudonymous
+    const viaRelayer = useRelayerState && relayerAvailable && !falconMode
     const chosenRelayer = viaRelayer ? pickRelayer() : null
     const relayerAddr = chosenRelayer ? chosenRelayer.address : 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAY5HFKQ'
     const relayerFee = chosenRelayer ? chosenRelayer.fee : 0n
@@ -1706,6 +1719,7 @@ export function useTransaction(): UseTransactionReturn {
 
       const displayAddr = recipientAlgoAddr.slice(0, 6) + '...' + recipientAlgoAddr.slice(-4)
       recordOperation('deposit') // privateSend is deposit+withdraw combined
+      invalidateCache()
       addToast('success', `${amountAlgo} ALGO sent privately to ${displayAddr}`)
       const psNotes = await loadNotes()
       setState(s => ({
@@ -1855,6 +1869,7 @@ export function useTransaction(): UseTransactionReturn {
       localStorage.removeItem('privacy_pool_pending_op')
 
       recordOperation('withdraw')
+      invalidateCache()
       const srcAlgo = (Number(note.denomination) / 1_000_000).toFixed(1)
       const dstAlgo = (Number(destDenom) / 1_000_000).toFixed(1)
       addToast('success', `Split complete: ${srcAlgo} ALGO → 2×${dstAlgo} ALGO`)
@@ -1982,6 +1997,7 @@ export function useTransaction(): UseTransactionReturn {
       localStorage.removeItem('privacy_pool_pending_op')
 
       recordOperation('deposit')
+      invalidateCache()
       const srcAlgo = (Number(note1.denomination) / 1_000_000).toFixed(1)
       const dstAlgo = (Number(destDenom) / 1_000_000).toFixed(1)
       addToast('success', `Combine complete: 2×${srcAlgo} ALGO → ${dstAlgo} ALGO`)

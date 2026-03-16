@@ -59,8 +59,8 @@ async function main() {
   const depositPK = algosdk.decodeAddress(plonkAddresses.deposit).publicKey;
   const privateSendPK = algosdk.decodeAddress(plonkAddresses.privateSend).publicKey;
 
-  // --- 0.5 ALGO pool (already created as 756478549) ---
-  const pool05AppId = 756478549;
+  // --- 0.5 ALGO pool (already created as 756862750) ---
+  const pool05AppId = 756862750;
   const pool05Addr = String(algosdk.getApplicationAddress(pool05AppId));
   console.log(`\n--- 0.5 ALGO pool (${pool05AppId}) ---`);
 

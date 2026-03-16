@@ -87,9 +87,9 @@ graph LR
 
 | Contract | App ID |
 |----------|--------|
-| Pool — 0.1 ALGO | `756478534` |
-| Pool — 0.5 ALGO | `756478549` |
-| Pool — 1.0 ALGO | `756480627` |
+| Pool — 0.1 ALGO | `756813724` |
+| Pool — 0.5 ALGO | `756862750` |
+| Pool — 1.0 ALGO | `756862851` |
 
 PLONK verifier addresses are permanently locked on each pool via one-shot `setPlonkVerifiers`.
 

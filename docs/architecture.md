@@ -25,9 +25,9 @@ graph TB
 
     subgraph "Algorand AVM v12 — Testnet"
         PLONK["PLONK LogicSig Verifiers<br/>4 txns per proof, 0.004 ALGO"]
-        PP1["Pool 0.1 ALGO<br/>App 756478534"]
-        PP5["Pool 0.5 ALGO<br/>App 756478549"]
-        PP10["Pool 1.0 ALGO<br/>App 756480627"]
+        PP1["Pool 0.1 ALGO<br/>App 756813724"]
+        PP5["Pool 0.5 ALGO<br/>App 756862750"]
+        PP10["Pool 1.0 ALGO<br/>App 756862851"]
     end
 
     subgraph "Infrastructure"

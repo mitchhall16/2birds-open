@@ -6,14 +6,14 @@ compatibility_date = "2024-05-01"
 ALGOD_URL = "https://testnet-api.algonode.cloud"
 VERIFIER_APP_ID = "756420114"
 BUDGET_HELPER_APP_ID = "756420102"
-ALLOWED_POOL_IDS = "756478534,756478549,756480627,756769976,756770804,756811677,756812139,756812509,756812865,756813724"
+ALLOWED_POOL_IDS = "756478534,756478549,756480627,756769976,756770804,756811677,756812139,756812509,756812865,756813724,756862531,756862543,756862750,756862851"
 PLONK_VERIFIER_ADDR = "PBVB7NKXKETOSI4ORWQY7A77PFNRUD4I2PL5L7HZ7EQSHNGIT4R2R6FXFY"
 
 [[kv_namespaces]]
 binding = "RELAY_KV"
-id = "bfad1480e0524d8abc87cd9f334327a5"
+id = "YOUR_KV_NAMESPACE_ID"
 # Create with: wrangler kv namespace create RELAY_KV
-# Then paste the id above
+# Then paste the id above (run `wrangler kv namespace list` to find it)
 
 # Secrets (set via `wrangler secret put`):
 # RELAYER_MNEMONIC — 25-word Algorand mnemonic for the relayer account

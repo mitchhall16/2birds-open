@@ -18,7 +18,7 @@ const __dirname = path.dirname(__filename);
 const ALGOD_URL = process.env.ALGOD_URL || 'https://testnet-api.algonode.cloud';
 const ALGOD_TOKEN = process.env.ALGOD_TOKEN || '';
 const ARTIFACTS_DIR = path.resolve(__dirname, '../contracts/artifacts');
-const CIRCUITS_DIR = path.resolve(__dirname, '../circuits/build');
+const CIRCUITS_DIR = path.resolve(__dirname, '../frontend/public/circuits');
 
 // Existing verifier app IDs (these stay the same)
 const VERIFIER_APP_ID = 756420114;       // withdraw verifier
@@ -26,7 +26,7 @@ const DEPOSIT_VERIFIER_APP_ID = 756420115; // deposit verifier
 const PRIVATESEND_VERIFIER_APP_ID = 756420116; // privateSend verifier
 
 const DENOMINATIONS = [
-  { label: '0.1 ALGO', microAlgos: 100_000 },
+  // { label: '0.1 ALGO', microAlgos: 100_000 },  // Already deployed: 756813724
   { label: '0.5 ALGO', microAlgos: 500_000 },
   { label: '1.0 ALGO', microAlgos: 1_000_000 },
 ];
@@ -105,6 +105,7 @@ async function main() {
       numGlobalByteSlices: globalBytes,
       numLocalInts: 0,
       numLocalByteSlices: 0,
+      extraPages: 1,
       onComplete: algosdk.OnApplicationComplete.NoOpOC,
       appArgs: [
         createSelector,

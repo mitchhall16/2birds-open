@@ -19,6 +19,8 @@ frontend/public/circuits/*.zkey
 # Environment / secrets
 .env
 .env.*
+!.env.example
+!frontend/.env.example
 *.pem
 *.key
 
@@ -27,6 +29,13 @@ frontend/public/circuits/*.zkey
 
 # Wrangler local state
 .wrangler/
+
+# Falcon WASM build — C source is cloned at build time, only keep compiled .mjs
+frontend/src/lib/falcon-det/c-src/
+
+# Deployment state (contains deployer addresses and txn IDs)
+deployment-testnet.json
+deployment-mainnet.json
 
 # OS files
 .DS_Store

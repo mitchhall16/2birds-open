@@ -16,8 +16,8 @@ const NETWORK_CONFIGS = {
 export const ALGOD_CONFIG = NETWORK_CONFIGS[NETWORK].algod
 export const INDEXER_CONFIG = NETWORK_CONFIGS[NETWORK].indexer
 
-const DEFAULT_POOL_APP_ID = 756480627
-const DEFAULT_POOL_APP_ADDRESS = '624W56BLCEIXUMOYCDYACW3QOJEKQTCC6YXY4Q7Z3Z4WQUOBERZTUEHP7I'
+const DEFAULT_POOL_APP_ID = 756862851
+const DEFAULT_POOL_APP_ADDRESS = 'NS4D6MJC47T3YITWPITMYJ2USQUUI4PI7PX6UXL3K6O34PZRYRAW6DDKFM'
 
 function getPoolConfig() {
   const storedId = localStorage.getItem('privacy_pool_app_id')
@@ -77,8 +77,8 @@ export const POOL_DENOMINATION = 1_000_000n
 // Per-denomination pool contracts
 export const POOL_CONTRACTS: Record<string, { appId: number; appAddress: string }> = {
   '100000': { appId: 756813724, appAddress: 'D6K6AS3AMFWVU3LH3PM6WT3YLIP64OMVNMWKJEBIZBTTJTLJ7YPL3T4BTY' },
-  '500000': { appId: 756478549, appAddress: 'E5TRMAZSX6FCSFVZU6OLS372YB56GAW662CHX2NAD6C7VATSYYVXECKDG4' },
-  '1000000': { appId: 756480627, appAddress: '624W56BLCEIXUMOYCDYACW3QOJEKQTCC6YXY4Q7Z3Z4WQUOBERZTUEHP7I' },
+  '500000': { appId: 756862750, appAddress: 'FY4LKY5OGPVCQF3XSG52AOSZZWYQYFGPRFR74RN3AUCQKVVRWVZEG7YZZY' },
+  '1000000': { appId: 756862851, appAddress: 'NS4D6MJC47T3YITWPITMYJ2USQUUI4PI7PX6UXL3K6O34PZRYRAW6DDKFM' },
 }
 
 /** Check if a tier's pool contract is deployed */
@@ -102,19 +102,19 @@ export const LSIG_RELAYER_FEE = 200_000n  // 0.2 ALGO (covers verifier gas + mar
 // Frontend randomly picks one per operation. Add more as operators join.
 export const RELAYERS = [
   {
-    url: 'https://privacy-pool-relayer.mitchhall16.workers.dev',
-    address: 'MCH3ZDYI6NEP2EFGZVLOH7BZH6ZEUYBZWERNJT7JGYK4GMUJDL6TLHZTIA',
+    url: import.meta.env.VITE_RELAYER_1_URL || 'https://privacy-pool-relayer.mitchhall16.workers.dev',
+    address: import.meta.env.VITE_RELAYER_1_ADDRESS || 'MCH3ZDYI6NEP2EFGZVLOH7BZH6ZEUYBZWERNJT7JGYK4GMUJDL6TLHZTIA',
     fee: 50_000n, // 0.05 ALGO
   },
   {
-    url: 'https://privacy-pool-relayer-2.mitchhall16.workers.dev',
-    address: 'EVDMCOHJVAOKKSWBTRQN5JYIMRQHJV2YGPUE2HHVBWLOZCKZOJXATZPOYE',
+    url: import.meta.env.VITE_RELAYER_2_URL || 'https://privacy-pool-relayer-2.mitchhall16.workers.dev',
+    address: import.meta.env.VITE_RELAYER_2_ADDRESS || 'EVDMCOHJVAOKKSWBTRQN5JYIMRQHJV2YGPUE2HHVBWLOZCKZOJXATZPOYE',
     fee: 50_000n, // 0.05 ALGO
   },
-] as const
+]
 
 /** Pick a random relayer for this operation (crypto-secure randomness) */
-export function pickRelayer(): typeof RELAYERS[number] {
+export function pickRelayer(): { url: string; address: string; fee: bigint } {
   const buf = new Uint8Array(1)
   crypto.getRandomValues(buf)
   return RELAYERS[buf[0] % RELAYERS.length]

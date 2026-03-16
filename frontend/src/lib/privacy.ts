@@ -1216,6 +1216,13 @@ export function hasPasswordKey(): boolean {
   return localStorage.getItem(PWD_SALT_KEY) !== null
 }
 
+/** Clear password key data (for "forgot password" reset) */
+export function clearPasswordKey(): void {
+  localStorage.removeItem(PWD_SALT_KEY)
+  localStorage.removeItem(PWD_VERIFY_KEY)
+  localStorage.removeItem('privacy_pool_pwd_hash') // legacy
+}
+
 /** Derive an AES key from a password using PBKDF2 */
 async function deriveKeyFromPassword(password: string, salt: Uint8Array): Promise<Uint8Array> {
   const keyMaterial = await crypto.subtle.importKey(

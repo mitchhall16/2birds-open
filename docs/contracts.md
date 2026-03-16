@@ -4,9 +4,9 @@
 
 | Contract | App ID | Notes |
 |----------|--------|-------|
-| Pool — 0.1 ALGO | 756478534 | Fixed denomination, PLONK verifiers locked |
-| Pool — 0.5 ALGO | 756478549 | Fixed denomination, PLONK verifiers locked |
-| Pool — 1.0 ALGO | 756480627 | Fixed denomination, PLONK verifiers locked |
+| Pool — 0.1 ALGO | 756813724 | Fixed denomination, PLONK verifiers locked |
+| Pool — 0.5 ALGO | 756862750 | Fixed denomination, PLONK verifiers locked |
+| Pool — 1.0 ALGO | 756862851 | Fixed denomination, PLONK verifiers locked |
 | Withdraw Verifier (Groth16) | 756420114 | Legacy — 6 public signals |
 | Deposit Verifier (Groth16) | 756420115 | Legacy — 4 public signals |
 | PrivateSend Verifier (Groth16) | 756420116 | Legacy — 9 public signals |

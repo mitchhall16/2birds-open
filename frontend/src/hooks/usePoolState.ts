@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useWallet } from '@txnlab/use-wallet-react'
 import { ALGOD_CONFIG, INDEXER_CONFIG, POOL_CONTRACTS } from '../lib/config'
 import { loadNotes } from '../lib/privacy'
+import { cachedGetApp, cachedGetAccount } from '../lib/algodCache'
 import algosdk from 'algosdk'
 
 interface PoolState {
@@ -14,31 +15,42 @@ interface PoolState {
   refresh: () => void
 }
 
+// Cache indexer withdrawal totals per pool, keyed by depositCount.
+// Only re-query indexer when deposit count changes (withdrawals are rare events).
+const indexerCache = new Map<string, { depositCount: number; totalOut: number }>()
+
 /**
- * Query the indexer to compute real deposits in a pool.
- * Counts grouped payments in, minus inner-transaction withdrawals out.
+ * Compute pool balance from on-chain state: depositCount × denomination.
+ * Uses next_idx (number of deposits) and denom (denomination) from global state.
+ * Then subtracts any inner-txn withdrawals to get actual shielded balance.
  */
-async function fetchPoolDeposits(poolAddr: string): Promise<number> {
-  const base = INDEXER_CONFIG.baseServer.replace(/\/$/, '')
-
-  // 1. Sum grouped payment txns TO the pool (real deposits)
-  let totalIn = 0
-  let nextToken = ''
-  do {
-    const url = `${base}/v2/transactions?address=${poolAddr}&address-role=receiver&tx-type=pay&limit=100${nextToken ? `&next=${nextToken}` : ''}`
-    const res = await fetch(url)
-    const data = await res.json()
-    for (const tx of data.transactions ?? []) {
-      if (tx.group) {
-        totalIn += tx['payment-transaction']?.amount ?? 0
-      }
+async function fetchPoolDeposits(appId: number, poolAddr: string, client: algosdk.Algodv2): Promise<number> {
+  // Read deposit count and denomination from on-chain state (via cache)
+  let depositCount = 0
+  let denomination = 0
+  try {
+    const appInfo = await cachedGetApp(client, appId)
+    const globalState = (appInfo as any).params?.globalState || (appInfo as any).params?.['global-state'] || []
+    for (const kv of globalState as any[]) {
+      const key = typeof kv.key === 'string' ? atob(kv.key) : new TextDecoder().decode(kv.key)
+      if (key === 'next_idx') depositCount = Number(kv.value?.uint ?? kv.value?.ui ?? 0)
+      if (key === 'denom') denomination = Number(kv.value?.uint ?? kv.value?.ui ?? 0)
     }
-    nextToken = data['next-token'] ?? ''
-  } while (nextToken)
+  } catch { return 0 }
 
-  // 2. Sum inner-txn withdrawals (app calls that produce inner pay txns out)
+  const totalIn = depositCount * denomination
+
+  // Check if we can reuse cached indexer withdrawal total
+  const cacheKey = `${appId}`
+  const cached = indexerCache.get(cacheKey)
+  if (cached && cached.depositCount === depositCount) {
+    return Math.max(0, totalIn - cached.totalOut)
+  }
+
+  // Deposit count changed — re-query indexer for withdrawal totals
+  const base = INDEXER_CONFIG.baseServer.replace(/\/$/, '')
   let totalOut = 0
-  nextToken = ''
+  let nextToken = ''
   do {
     const url = `${base}/v2/transactions?address=${poolAddr}&tx-type=appl&limit=100${nextToken ? `&next=${nextToken}` : ''}`
     const res = await fetch(url)
@@ -56,6 +68,7 @@ async function fetchPoolDeposits(poolAddr: string): Promise<number> {
     nextToken = data['next-token'] ?? ''
   } while (nextToken)
 
+  indexerCache.set(cacheKey, { depositCount, totalOut })
   return Math.max(0, totalIn - totalOut)
 }
 
@@ -82,7 +95,7 @@ export function usePoolState(): PoolState {
       // Pool total: sum deposits across all 3 tier pools
       try {
         const pools = Object.values(POOL_CONTRACTS)
-        const totals = await Promise.all(pools.map(p => fetchPoolDeposits(p.appAddress).catch(() => 0)))
+        const totals = await Promise.all(pools.map(p => fetchPoolDeposits(p.appId, p.appAddress, client).catch(() => 0)))
         setTotalDeposited(totals.reduce((a, b) => a + b, 0) / 1_000_000)
       } catch {
         setTotalDeposited(0)
@@ -103,7 +116,7 @@ export function usePoolState(): PoolState {
         let total = 0
         for (const p of pools) {
           try {
-            const appInfo = await client.getApplicationByID(p.appId).do()
+            const appInfo = await cachedGetApp(client, p.appId)
             const globalState = (appInfo as any).params?.globalState || (appInfo as any).params?.['global-state'] || []
             for (const kv of globalState as any[]) {
               const key = typeof kv.key === 'string' ? atob(kv.key) : new TextDecoder().decode(kv.key)
@@ -121,7 +134,7 @@ export function usePoolState(): PoolState {
       // Get connected wallet balance
       if (activeAddress) {
         try {
-          const acctInfo = await client.accountInformation(activeAddress).do()
+          const acctInfo = await cachedGetAccount(client, activeAddress)
           setWalletBalance(Number(acctInfo.amount ?? 0) / 1_000_000)
         } catch {
           setWalletBalance(0)
@@ -138,7 +151,7 @@ export function usePoolState(): PoolState {
 
   useEffect(() => {
     fetchState()
-    const interval = setInterval(fetchState, 30_000)
+    const interval = setInterval(fetchState, 60_000)
     return () => clearInterval(interval)
   }, [fetchState])
 

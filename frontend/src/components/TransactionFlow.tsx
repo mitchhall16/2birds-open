@@ -4,10 +4,11 @@ import { useToast } from '../contexts/ToastContext'
 import { useTransaction, type TxStage } from '../hooks/useTransaction'
 import { CostBreakdown } from './CostBreakdown'
 import { txnUrl, DENOMINATION_TIERS, type DenominationTier, SUBSIDY_TIERS, TREASURY_ADDRESS } from '../lib/config'
-import { loadNotes, removeNote, removeNoteByCommitment, deriveMasterKey, deriveMasterKeyFromPassword, getCachedMasterKey, clearMasterKey, recoverNotes, initMimc, PasswordRequiredError, hasPasswordKey, isNoteSpent, type DepositNote } from '../lib/privacy'
+import { loadNotes, removeNote, removeNoteByCommitment, deriveMasterKey, deriveMasterKeyFromPassword, getCachedMasterKey, clearMasterKey, recoverNotes, initMimc, PasswordRequiredError, hasPasswordKey, clearPasswordKey, isNoteSpent, type DepositNote } from '../lib/privacy'
 import { PasswordModal } from './PasswordModal'
 import { NoteBackup } from './NoteBackup'
 import { ALGOD_CONFIG, POOL_CONTRACTS } from '../lib/config'
+import { invalidateCache } from '../lib/algodCache'
 import { isPrivacyAddress } from '../lib/address'
 import { privacyAddressFromWallet } from '../lib/address'
 import { useFalcon } from '../contexts/FalconContext'
@@ -24,7 +25,7 @@ interface TransactionFlowProps {
 type Tab = 'deposit' | 'send' | 'manage' | 'convert'
 
 export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalance }: TransactionFlowProps) {
-  const { activeAddress, signData, algodClient } = useWallet()
+  const { activeAddress, signData, algodClient, transactionSigner } = useWallet()
   const { addToast } = useToast()
   const tx = useTransaction()
   const [tab, setTab] = useState<Tab>('deposit')
@@ -51,7 +52,10 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
   // Load notes, treasury balance, and pool indices on mount
   useEffect(() => { loadNotes().then(setNotes).catch(console.error) }, [])
   useEffect(() => { tx.refreshTreasuryBalance().catch(console.error) }, [])
-  useEffect(() => { tx.refreshStaleNotes().catch(console.error) }, []) // also populates poolNextIndices
+  // Refresh stale notes once on mount (no polling — cache dedup handles freshness)
+  useEffect(() => {
+    tx.refreshStaleNotes().catch(console.error) // also populates poolNextIndices
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [scanningChain, setScanningChain] = useState(false)
   const [scanResult, setScanResult] = useState<{ recovered: number; newNotes: number } | null>(null)
@@ -137,7 +141,9 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
     if (tx.stage === 'withdraw_complete' && prev !== 'withdraw_complete') onWithdraw()
     if ((tx.stage === 'deposit_complete' || tx.stage === 'withdraw_complete') && prev !== tx.stage) {
       onComplete()
+      invalidateCache()
       refreshNotes()
+      tx.refreshStaleNotes().catch(console.error)
     }
   }, [tx.stage, onDeposit, onWithdraw, onComplete])
 
@@ -185,6 +191,16 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
     setPendingAction(null)
     setPasswordError('')
     tx.reset()
+  }
+
+  function handlePasswordReset() {
+    clearPasswordKey()
+    clearMasterKey()
+    setShowPasswordModal(false)
+    setPendingAction(null)
+    setPasswordError('')
+    tx.reset()
+    addToast('info', 'Password cleared. Use Scan Chain in the Manage tab to recover your notes from on-chain backup.')
   }
 
   async function handleDeposit() {
@@ -315,16 +331,33 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
           <div style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 8, wordBreak: 'break-all', color: 'var(--text-secondary)' }}>
             {falcon.account.address}
           </div>
-          <button
-            className="manage-btn manage-btn--copy"
-            style={{ marginTop: 8 }}
-            onClick={() => {
-              navigator.clipboard.writeText(falcon.account!.address)
-              addToast('success', 'Falcon address copied')
-            }}
-          >
-            Copy Address
-          </button>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button
+              className="manage-btn manage-btn--copy"
+              onClick={() => {
+                navigator.clipboard.writeText(falcon.account!.address)
+                addToast('success', 'Falcon address copied')
+              }}
+            >
+              Copy Address
+            </button>
+            {activeAddress && transactionSigner && (
+              <button
+                className="manage-btn"
+                style={{ background: 'var(--accent)', color: '#000' }}
+                onClick={async () => {
+                  try {
+                    await falcon.fundFalcon(transactionSigner, activeAddress)
+                    addToast('success', 'Falcon address funded!')
+                  } catch (err) {
+                    addToast('error', `Funding failed: ${err instanceof Error ? err.message : String(err)}`)
+                  }
+                }}
+              >
+                Fund 0.5 ALGO
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -423,7 +456,7 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                       return (
                         <div key={tier.label} className="batch-windows__pool-row">
                           <span className="batch-windows__pool-tier">{tier.label} ALGO</span>
-                          <span className="batch-windows__pool-count">{count} deposits</span>
+                          <span className="batch-windows__pool-count">{count} all-time deposits</span>
                           <span className={`anonymity-indicator__level anonymity-indicator__level--${level}`}>
                             {level === 'good' ? 'Good' : level === 'moderate' ? 'Moderate' : 'Low'}
                           </span>
@@ -1022,6 +1055,7 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
         mode={hasPasswordKey() ? 'unlock' : 'create'}
         onSubmit={handlePasswordSubmit}
         onCancel={handlePasswordCancel}
+        onReset={handlePasswordReset}
         externalError={passwordError}
       />
 

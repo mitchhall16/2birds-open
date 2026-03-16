@@ -5,13 +5,15 @@ interface PasswordModalProps {
   mode: 'create' | 'unlock'
   onSubmit: (password: string) => void
   onCancel: () => void
+  onReset?: () => void
   externalError?: string
 }
 
-export function PasswordModal({ open, mode, onSubmit, onCancel, externalError }: PasswordModalProps) {
+export function PasswordModal({ open, mode, onSubmit, onCancel, onReset, externalError }: PasswordModalProps) {
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState('')
+  const [showReset, setShowReset] = useState(false)
 
   // Clear state when modal closes
   useEffect(() => {
@@ -19,6 +21,7 @@ export function PasswordModal({ open, mode, onSubmit, onCancel, externalError }:
       setPassword('')
       setConfirm('')
       setError('')
+      setShowReset(false)
     }
   }, [open])
 
@@ -53,24 +56,55 @@ export function PasswordModal({ open, mode, onSubmit, onCancel, externalError }:
     setConfirm('')
   }
 
+  if (showReset) {
+    return (
+      <div className="wallet-modal-overlay" onClick={onCancel}>
+        <div className="wallet-modal" onClick={e => e.stopPropagation()} style={{ minWidth: 360 }}>
+          <div className="wallet-modal__title">Reset Password</div>
+
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12, lineHeight: 1.5 }}>
+            This will clear your locally stored notes and password. Your deposit notes are backed up on-chain via encrypted HPKE envelopes.
+          </p>
+
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16, lineHeight: 1.5 }}>
+            After resetting, you can recover your notes using <strong>Scan Chain</strong> in the Manage tab.
+          </p>
+
+          <button
+            className="tx-execute tx-execute--ready"
+            style={{ width: '100%', marginTop: 4, background: 'var(--danger)' }}
+            onClick={() => {
+              setShowReset(false)
+              onReset?.()
+            }}
+          >
+            Reset & Start Fresh
+          </button>
+
+          <button
+            className="wallet-modal__close"
+            onClick={() => setShowReset(false)}
+            style={{ marginTop: 8 }}
+          >
+            Go Back
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="wallet-modal-overlay" onClick={onCancel}>
       <div className="wallet-modal" onClick={e => e.stopPropagation()} style={{ minWidth: 360 }}>
         <div className="wallet-modal__title">
-          {mode === 'create' ? 'Set Encryption Password' : 'Enter Password'}
+          {mode === 'create' ? 'Secure Your Privacy Notes' : 'Unlock Privacy Notes'}
         </div>
 
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16, lineHeight: 1.5 }}>
           {mode === 'create'
-            ? 'Your wallet does not support signData. Set a password to encrypt your deposit notes. You will need this password each session.'
-            : 'Enter your password to decrypt your deposit notes.'}
+            ? 'Your wallet doesn\'t support automatic key derivation. Set a password to encrypt your deposit notes. You\'ll need this each session.'
+            : 'Enter your password to decrypt your deposit notes for this session.'}
         </p>
-
-        {mode === 'unlock' && (
-          <p style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 16, lineHeight: 1.5, opacity: 0.8 }}>
-            This is the password you chose when you first connected this wallet. There is no way to recover it — if lost, your encrypted notes are permanently inaccessible.
-          </p>
-        )}
 
         <form onSubmit={handleSubmit}>
           <div className="tx-field" style={{ marginBottom: 12 }}>
@@ -112,6 +146,16 @@ export function PasswordModal({ open, mode, onSubmit, onCancel, externalError }:
             {mode === 'create' ? 'Set Password' : 'Unlock'}
           </button>
         </form>
+
+        {mode === 'unlock' && onReset && (
+          <button
+            className="wallet-modal__close"
+            onClick={() => setShowReset(true)}
+            style={{ marginTop: 12, fontSize: 12, color: 'var(--text-secondary)', opacity: 0.8 }}
+          >
+            Forgot password?
+          </button>
+        )}
 
         <button className="wallet-modal__close" onClick={onCancel}>
           Cancel
