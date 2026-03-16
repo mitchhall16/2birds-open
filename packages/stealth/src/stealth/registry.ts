@@ -157,7 +157,7 @@ export class StealthRegistry {
    */
   async getCurrentRound(): Promise<bigint> {
     const status = await this.algod.status().do();
-    return BigInt(status['last-round']);
+    return BigInt(status['lastRound'] ?? status['last-round']);
   }
 
   /**

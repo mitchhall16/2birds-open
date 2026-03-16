@@ -1,5 +1,9 @@
 node_modules/
 dist/
+
+# Keep pre-built falcon WASM binary (requires emscripten to rebuild)
+!frontend/src/lib/falcon-det/dist/
+!frontend/src/lib/falcon-det/dist/falcon-det.mjs
 *.tsbuildinfo
 deployer-wallets.txt
 
