@@ -210,9 +210,9 @@ graph TB
 
 | Primitive | Implementation | Purpose |
 |-----------|---------------|---------|
-| PLONK proof system | Circom 2.1.6 + snarkjs, BN254 curve | Membership/insertion proofs |
+| PLONK proof system | [Circom](https://github.com/iden3/circom) 2.1.6 + [snarkjs](https://github.com/iden3/snarkjs), BN254 curve | Membership/insertion proofs |
 | LogicSig verification | 4 txns, BN254 pairing check in TEAL | On-chain proof verification (0.004 ALGO) |
-| MiMC Sponge | 220 rounds, x^5 Feistel, circomlib-compatible | Merkle tree hashing + commitment |
+| MiMC Sponge | 220 rounds, x^5 Feistel, [circomlib](https://github.com/iden3/circomlib)-compatible | Merkle tree hashing + commitment |
 | HPKE | X25519 + HKDF-SHA256 + ChaCha20-Poly1305 | Encrypted note backup in txn notes |
 | Key derivation | HKDF for view keys, MiMC for spend secrets | View/spend separation |
 | Privacy addresses | Bech32 `priv1...` (66-byte payload) | Algo pubkey + X25519 view pubkey |
@@ -243,11 +243,11 @@ graph LR
     end
 ```
 
-### 2birds vs HermesVault
+### 2birds vs [HermesVault](https://github.com/giuliop/HermesVault)
 
 | | 2birds | HermesVault |
 |---|---|---|
-| **Proof system** | PLONK (circom/snarkjs) | PLONK (gnark/AlgoPlonk) |
+| **Proof system** | PLONK ([circom](https://github.com/iden3/circom)/[snarkjs](https://github.com/iden3/snarkjs)) | PLONK ([gnark](https://github.com/Consensys/gnark)/[AlgoPlonk](https://github.com/giuliop/AlgoPlonk)) |
 | **Cost per op** | ~0.007 ALGO | ~0.007 ALGO |
 | **Relayer** | Yes (0.05 ALGO) | No |
 | **Denomination tiers** | 0.1 / 0.5 / 1.0 ALGO | 10 / 100 / 1000 ALGO |
@@ -321,7 +321,7 @@ block-beta
 
 ### Tech stack
 
-Circom 2.1.6 + snarkjs (PLONK/Groth16, BN254) | TealScript | React + Vite | Cloudflare Pages/Workers/R2/KV | IPFS | AVM v12 | Falcon-1024 (optional PQ)
+[Circom](https://github.com/iden3/circom) 2.1.6 + [snarkjs](https://github.com/iden3/snarkjs) (PLONK/Groth16, BN254) | [TealScript](https://github.com/algorandfoundation/TEALScript) | React + [Vite](https://github.com/vitejs/vite) | [Cloudflare](https://developers.cloudflare.com/workers/) Pages/Workers/R2/KV | IPFS | AVM v12 | [Falcon-1024](https://falcon-sign.info/) (optional PQ)
 
 ## License
 
