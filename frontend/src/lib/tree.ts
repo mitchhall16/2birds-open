@@ -9,10 +9,11 @@
  */
 
 import { initMimc, mimcHash, bytesToScalar, scalarToBytes } from './privacy'
-import { CONTRACTS, ALGOD_CONFIG, POOL_CONTRACTS } from './config'
+import { CONTRACTS, ALGOD_CONFIG, POOL_CONTRACTS, getAllPools } from './config'
 import algosdk from 'algosdk'
 
 const TREE_DEPTH = 16
+const TREE_CAPACITY = 2 ** TREE_DEPTH // 65536
 const OLD_TREE_STORAGE_KEY = 'privacy_pool_merkle_tree'
 
 function treeStorageKey(appId: number): string {
@@ -55,6 +56,31 @@ class MerkleTree {
 
   get nextIndex(): number {
     return this.leaves.length
+  }
+
+  /** Maximum number of leaves this tree can hold */
+  get capacity(): number {
+    return 2 ** this.depth
+  }
+
+  /** Number of remaining empty leaf slots */
+  get remainingCapacity(): number {
+    return this.capacity - this.leaves.length
+  }
+
+  /** Percentage of tree capacity used (0–100) */
+  get percentFull(): number {
+    return (this.leaves.length / this.capacity) * 100
+  }
+
+  /** True when the tree has zero remaining capacity */
+  get isFull(): boolean {
+    return this.leaves.length >= this.capacity
+  }
+
+  /** True when the tree is at or above the given threshold (0–100) */
+  isApproachingCapacity(thresholdPercent: number = 90): boolean {
+    return this.percentFull >= thresholdPercent
   }
 
   insert(leaf: Scalar): number {
@@ -143,7 +169,7 @@ async function migrateOldTree(zeroHashes: Scalar[]): Promise<void> {
 
     // Try to find which pool this tree belongs to by comparing leaf count to on-chain next_idx
     const client = new algosdk.Algodv2(ALGOD_CONFIG.token, ALGOD_CONFIG.baseServer, ALGOD_CONFIG.port)
-    for (const [, pool] of Object.entries(POOL_CONTRACTS)) {
+    for (const pool of getAllPools()) {
       try {
         const appInfo = await client.getApplicationByID(pool.appId).do()
         const globalState = (appInfo as any).params?.globalState || (appInfo as any).params?.['global-state'] || []
@@ -308,18 +334,19 @@ export async function syncTreeFromChain(appId: number): Promise<MerkleTree> {
   return tree
 }
 
-/** Sync all pool trees from chain */
+/** Sync all pool trees from chain (across all generations) */
 export async function syncAllTreesFromChain(
   onProgress?: (pool: string, done: boolean) => void,
 ): Promise<void> {
-  for (const [denom, pool] of Object.entries(POOL_CONTRACTS)) {
-    onProgress?.(`${Number(denom) / 1_000_000} ALGO pool`, false)
+  for (const pool of getAllPools()) {
+    const label = `pool ${pool.appId}`
+    onProgress?.(label, false)
     try {
       await syncTreeFromChain(pool.appId)
     } catch (err) {
-      console.warn(`Failed to sync tree for pool ${denom}:`, err)
+      console.warn(`Failed to sync tree for pool ${pool.appId}:`, err)
     }
-    onProgress?.(`${Number(denom) / 1_000_000} ALGO pool`, true)
+    onProgress?.(label, true)
   }
 }
 
@@ -330,10 +357,57 @@ export function clearTreeCache(appId?: number): void {
     localStorage.removeItem(treeStorageKey(appId))
   } else {
     cachedTrees.clear()
-    for (const [, pool] of Object.entries(POOL_CONTRACTS)) {
+    for (const pool of getAllPools()) {
       localStorage.removeItem(treeStorageKey(pool.appId))
     }
   }
 }
+
+/** Get capacity info for a pool's tree without mutating it */
+export function getTreeCapacityInfo(tree: MerkleTree): {
+  capacity: number
+  used: number
+  remaining: number
+  percentFull: number
+  isFull: boolean
+  isNearFull: boolean
+} {
+  return {
+    capacity: tree.capacity,
+    used: tree.nextIndex,
+    remaining: tree.remainingCapacity,
+    percentFull: tree.percentFull,
+    isFull: tree.isFull,
+    isNearFull: tree.isApproachingCapacity(90),
+  }
+}
+
+/**
+ * Check pool capacity from on-chain nextIndex (no local tree needed).
+ * Useful for fast pre-flight checks before expensive proof generation.
+ */
+export function checkPoolCapacity(nextIndex: number): {
+  capacity: number
+  used: number
+  remaining: number
+  percentFull: number
+  isFull: boolean
+  isNearFull: boolean
+} {
+  const capacity = TREE_CAPACITY
+  const used = nextIndex
+  const remaining = capacity - used
+  const percentFull = (used / capacity) * 100
+  return {
+    capacity,
+    used,
+    remaining,
+    percentFull,
+    isFull: remaining <= 0,
+    isNearFull: percentFull >= 90,
+  }
+}
+
+export { TREE_DEPTH, TREE_CAPACITY }
 
 export type { MerklePath, MerkleTree }

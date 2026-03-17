@@ -23,7 +23,9 @@ function getPoolConfig() {
   const storedId = localStorage.getItem('privacy_pool_app_id')
   if (storedId) {
     // Validate against known pool contracts — reject untrusted app IDs
-    const pool = POOL_CONTRACTS[storedId] ?? Object.values(POOL_CONTRACTS).find(p => p.appId === parseInt(storedId, 10))
+    // Check flat POOL_CONTRACTS first, then search all pool entries in POOL_REGISTRY
+    const allPools = Object.values(POOL_REGISTRY).flat()
+    const pool = allPools.find(p => p.appId === parseInt(storedId, 10))
     if (pool) return { appId: pool.appId, appAddress: pool.appAddress }
   }
   return { appId: DEFAULT_POOL_APP_ID, appAddress: DEFAULT_POOL_APP_ADDRESS }
@@ -74,24 +76,95 @@ export function isValidTier(microAlgos: bigint): boolean {
 // Default denomination: 1 ALGO = 1_000_000 microAlgos
 export const POOL_DENOMINATION = 1_000_000n
 
-// Per-denomination pool contracts
-export const POOL_CONTRACTS: Record<string, { appId: number; appAddress: string }> = {
-  '100000': { appId: 756813724, appAddress: 'D6K6AS3AMFWVU3LH3PM6WT3YLIP64OMVNMWKJEBIZBTTJTLJ7YPL3T4BTY' },
-  '500000': { appId: 756862750, appAddress: 'FY4LKY5OGPVCQF3XSG52AOSZZWYQYFGPRFR74RN3AUCQKVVRWVZEG7YZZY' },
-  '1000000': { appId: 756862851, appAddress: 'NS4D6MJC47T3YITWPITMYJ2USQUUI4PI7PX6UXL3K6O34PZRYRAW6DDKFM' },
+// Pool status: 'active' accepts deposits, 'full'/'retiring' only allow withdrawals
+export type PoolStatus = 'active' | 'full' | 'retiring'
+
+export interface PoolEntry {
+  appId: number
+  appAddress: string
+  status: PoolStatus
+}
+
+// Per-denomination pool contracts — each denomination can have MULTIPLE pools (rotation)
+export const POOL_REGISTRY: Record<string, PoolEntry[]> = {
+  '100000': [
+    { appId: 756813724, appAddress: 'D6K6AS3AMFWVU3LH3PM6WT3YLIP64OMVNMWKJEBIZBTTJTLJ7YPL3T4BTY', status: 'active' },
+  ],
+  '500000': [
+    { appId: 756862750, appAddress: 'FY4LKY5OGPVCQF3XSG52AOSZZWYQYFGPRFR74RN3AUCQKVVRWVZEG7YZZY', status: 'active' },
+  ],
+  '1000000': [
+    { appId: 756862851, appAddress: 'NS4D6MJC47T3YITWPITMYJ2USQUUI4PI7PX6UXL3K6O34PZRYRAW6DDKFM', status: 'active' },
+  ],
+}
+
+/**
+ * Backward-compatible flat pool map: denomination → first pool entry.
+ * Used by existing code that iterates POOL_CONTRACTS for tree sync, note validation, etc.
+ * This map includes ALL pools across ALL generations (not just active ones).
+ */
+export const POOL_CONTRACTS: Record<string, { appId: number; appAddress: string }> = (() => {
+  const flat: Record<string, { appId: number; appAddress: string }> = {}
+  for (const [denom, pools] of Object.entries(POOL_REGISTRY)) {
+    // Use the active pool as the default for each denomination
+    const active = pools.find(p => p.status === 'active')
+    if (active) flat[denom] = { appId: active.appId, appAddress: active.appAddress }
+    else if (pools.length > 0) flat[denom] = { appId: pools[0].appId, appAddress: pools[0].appAddress }
+  }
+  return flat
+})()
+
+/** Get ALL pool entries across all denominations (for tree sync, note validation, etc.) */
+export function getAllPools(): PoolEntry[] {
+  return Object.values(POOL_REGISTRY).flat()
+}
+
+/** Get all pool entries for a specific denomination */
+export function getPoolsForDenom(microAlgos: bigint): PoolEntry[] {
+  return POOL_REGISTRY[microAlgos.toString()] ?? []
+}
+
+/** Get the active pool for deposits (the one currently accepting new deposits) */
+export function getActivePoolForTier(microAlgos: bigint): PoolEntry {
+  const pools = POOL_REGISTRY[microAlgos.toString()]
+  if (!pools || pools.length === 0) throw new Error(`No pool configured for denomination ${microAlgos} microAlgos`)
+  const active = pools.find(p => p.status === 'active')
+  if (!active) throw new Error(`No active pool for denomination ${microAlgos} microAlgos — all pools are full or retiring`)
+  return active
+}
+
+/** Get pool config by appId (for withdrawals — find the specific pool a note belongs to) */
+export function getPoolByAppId(appId: number): (PoolEntry & { denomination: string }) | undefined {
+  for (const [denom, pools] of Object.entries(POOL_REGISTRY)) {
+    const pool = pools.find(p => p.appId === appId)
+    if (pool) return { ...pool, denomination: denom }
+  }
+  return undefined
+}
+
+/** Get the pool generation number (1-indexed) for display purposes */
+export function getPoolGeneration(appId: number): number {
+  for (const pools of Object.values(POOL_REGISTRY)) {
+    const idx = pools.findIndex(p => p.appId === appId)
+    if (idx >= 0) return idx + 1
+  }
+  return 1
+}
+
+/** Get total number of pool generations for a denomination */
+export function getPoolGenerationCount(microAlgos: bigint): number {
+  return (POOL_REGISTRY[microAlgos.toString()] ?? []).length
 }
 
 /** Check if a tier's pool contract is deployed */
 export function isTierDeployed(microAlgos: bigint): boolean {
-  const pool = POOL_CONTRACTS[microAlgos.toString()]
-  return !!pool && pool.appId !== 0
+  const pools = POOL_REGISTRY[microAlgos.toString()]
+  return !!pools && pools.length > 0 && pools.some(p => p.appId !== 0)
 }
 
-/** Get pool config for a specific tier (microAlgos) */
+/** Get pool config for a specific tier (microAlgos) — returns the active pool for deposits */
 export function getPoolForTier(microAlgos: bigint): { appId: number; appAddress: string } {
-  const pool = POOL_CONTRACTS[microAlgos.toString()]
-  if (!pool) throw new Error(`No pool configured for denomination ${microAlgos} microAlgos`)
-  return pool
+  return getActivePoolForTier(microAlgos)
 }
 
 // LogicSig relayer (trustless, no server needed)
@@ -160,6 +233,7 @@ export const FEES = USE_PLONK_LSIG ? PLONK_LSIG_FEES : GROTH16_FEES
 // Falcon LogicSig extra fees (when quantum-safe mode is active)
 // Groth16 groups need padding txns because Falcon LogicSig is ~3093 bytes.
 // PLONK groups (6+ txns) already have enough byte budget from fee pooling.
+// EXPERIMENTAL: Falcon signing is PQ-secure but HPKE note encryption (X25519) is not.
 export const FALCON_EXTRA_FEE = {
   groth16Padding: 2_000n, // 1-2 padding txns × 0.001 ALGO
   plonk: 0n,
@@ -234,8 +308,8 @@ export const PLONK_VERIFIER_ADDRESSES: Record<string, {
 }
 
 // Mainnet pool contracts (set after deployment)
-export const MAINNET_POOL_CONTRACTS: Record<string, { appId: number; appAddress: string }> = {
-  '100000': { appId: 0, appAddress: '' },
-  '500000': { appId: 0, appAddress: '' },
-  '1000000': { appId: 0, appAddress: '' },
+export const MAINNET_POOL_REGISTRY: Record<string, PoolEntry[]> = {
+  '100000': [{ appId: 0, appAddress: '', status: 'active' }],
+  '500000': [{ appId: 0, appAddress: '', status: 'active' }],
+  '1000000': [{ appId: 0, appAddress: '', status: 'active' }],
 }

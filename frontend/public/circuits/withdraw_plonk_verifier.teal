@@ -1,6 +1,28 @@
 #pragma version 11
 // PLONK LogicSig Verifier — nPublic=6, domain=32768
 
+// === Rekey protection: no txn in group may rekey ===
+global GroupSize
+store 80 // group_size
+pushint 0
+store 81 // rekey_check_idx
+rekey_check_loop:
+load 81 // idx
+load 80 // group_size
+==
+bnz rekey_check_done
+load 81
+gtxns RekeyTo
+global ZeroAddress
+==
+assert // no transaction may rekey
+load 81
+pushint 1
++
+store 81
+b rekey_check_loop
+rekey_check_done:
+
 // === Group structure validation ===
 // Index 0: full verification. Index 3: signals carrier (budget padding).
 txn GroupIndex

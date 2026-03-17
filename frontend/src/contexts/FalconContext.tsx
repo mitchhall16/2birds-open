@@ -1,6 +1,11 @@
 /**
  * Falcon-1024 Post-Quantum Mode — React Context
  *
+ * EXPERIMENTAL: Provides post-quantum SIGNING only. Note encryption (HPKE)
+ * still uses X25519 which is NOT post-quantum secure. See hpke.ts and
+ * falcon.ts for detailed security analysis. This is defense-in-depth,
+ * not a complete post-quantum solution.
+ *
  * Manages the opt-in Falcon mode state: toggle, keypair derivation,
  * compiled LogicSig program, Falcon address funding status, and balance.
  *

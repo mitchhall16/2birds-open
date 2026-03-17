@@ -7,7 +7,8 @@ import { txnUrl, DENOMINATION_TIERS, type DenominationTier, SUBSIDY_TIERS, TREAS
 import { loadNotes, removeNote, removeNoteByCommitment, deriveMasterKey, deriveMasterKeyFromPassword, getCachedMasterKey, clearMasterKey, recoverNotes, initMimc, PasswordRequiredError, hasPasswordKey, clearPasswordKey, isNoteSpent, type DepositNote } from '../lib/privacy'
 import { PasswordModal } from './PasswordModal'
 import { NoteBackup } from './NoteBackup'
-import { ALGOD_CONFIG, POOL_CONTRACTS } from '../lib/config'
+import { ALGOD_CONFIG, POOL_CONTRACTS, POOL_REGISTRY, getActivePoolForTier, getPoolGeneration, getPoolGenerationCount, getPoolsForDenom, getPoolByAppId, type PoolEntry } from '../lib/config'
+import { checkPoolCapacity, TREE_CAPACITY } from '../lib/tree'
 import { invalidateCache } from '../lib/algodCache'
 import { isPrivacyAddress } from '../lib/address'
 import { privacyAddressFromWallet } from '../lib/address'
@@ -127,7 +128,17 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
   const isValidManageDest = manageDestination.length > 0 && algosdk.isValidAddress(manageDestination)
 
   const isIdle = tx.stage === 'idle' || tx.stage === 'deposit_complete' || tx.stage === 'withdraw_complete'
-  const canDeposit = !!activeAddress && isIdle
+
+  // Pool capacity check — use the active pool for the selected tier
+  const selectedActivePool: PoolEntry | undefined = (() => {
+    try { return getActivePoolForTier(selectedTier.microAlgos) } catch { return undefined }
+  })()
+  const selectedPoolNextIndex = selectedActivePool ? (tx.poolNextIndices.get(selectedActivePool.appId) ?? 0) : 0
+  const selectedPoolCapacity = checkPoolCapacity(selectedPoolNextIndex)
+  const selectedPoolGeneration = selectedActivePool ? getPoolGeneration(selectedActivePool.appId) : 1
+  const selectedPoolGenerationCount = getPoolGenerationCount(selectedTier.microAlgos)
+
+  const canDeposit = !!activeAddress && isIdle && !selectedPoolCapacity.isFull && !!selectedActivePool
   const canSend = !!activeAddress && isValidDest && isIdle && privacyAcknowledged
 
   async function refreshNotes() {
@@ -325,9 +336,12 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
       {/* Falcon funding banner — shown when quantum-safe mode is enabled but address has no funds */}
       {falcon.enabled && falcon.account && !falcon.funded && isIdleUI && (
         <div className="tx-info-box" style={{ borderColor: 'var(--accent)', marginBottom: 16 }}>
-          <strong>Quantum-Safe Mode Active</strong>
+          <strong>Quantum-Safe Mode Active (Experimental)</strong>
           <br />
           Fund your Falcon address to start using post-quantum signing.
+          <div style={{ fontSize: 10, color: 'var(--warning, #e6a700)', marginTop: 4 }}>
+            Note: Signing is PQ-secure but note encryption (X25519) is not. See docs for details.
+          </div>
           <div style={{ fontFamily: 'monospace', fontSize: 11, marginTop: 8, wordBreak: 'break-all', color: 'var(--text-secondary)' }}>
             {falcon.account.address}
           </div>
@@ -445,20 +459,28 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                     </button>
                   ))}
                 </div>
-                {/* Per-tier pool deposits */}
+                {/* Per-tier pool deposits with capacity info (all generations) */}
                 {tx.poolNextIndices.size > 0 && (
                   <div className="batch-windows__pools">
                     {DENOMINATION_TIERS.map(tier => {
-                      const pool = POOL_CONTRACTS[tier.microAlgos.toString()]
-                      if (!pool) return null
-                      const count = tx.poolNextIndices.get(pool.appId) ?? 0
-                      const level = count >= 50 ? 'good' : count >= 10 ? 'moderate' : 'low'
+                      const pools = getPoolsForDenom(tier.microAlgos)
+                      if (pools.length === 0) return null
+                      // Sum deposits across all generations
+                      const totalCount = pools.reduce((sum, p) => sum + (tx.poolNextIndices.get(p.appId) ?? 0), 0)
+                      const activePool = pools.find(p => p.status === 'active')
+                      const activeCount = activePool ? (tx.poolNextIndices.get(activePool.appId) ?? 0) : 0
+                      const activeCap = checkPoolCapacity(activeCount)
+                      const level = !activePool || activeCap.isFull ? 'low' : totalCount >= 50 ? 'good' : totalCount >= 10 ? 'moderate' : 'low'
                       return (
                         <div key={tier.label} className="batch-windows__pool-row">
                           <span className="batch-windows__pool-tier">{tier.label} ALGO</span>
-                          <span className="batch-windows__pool-count">{count} all-time deposits</span>
+                          <span className="batch-windows__pool-count">
+                            {totalCount.toLocaleString()} total
+                            {pools.length > 1 ? ` (${pools.length} pools)` : ''}
+                            {!activePool ? ' (NO ACTIVE)' : activeCap.isFull ? ' (ACTIVE FULL)' : activeCap.isNearFull ? ` (${activeCap.percentFull.toFixed(0)}%)` : ''}
+                          </span>
                           <span className={`anonymity-indicator__level anonymity-indicator__level--${level}`}>
-                            {level === 'good' ? 'Good' : level === 'moderate' ? 'Moderate' : 'Low'}
+                            {!activePool || activeCap.isFull ? 'Full' : level === 'good' ? 'Good' : level === 'moderate' ? 'Moderate' : 'Low'}
                           </span>
                         </div>
                       )
@@ -504,15 +526,51 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
 
           <div className="tx-flow__spacer" />
 
+          {/* Pool capacity warning/block for deposits */}
+          {tab === 'deposit' && selectedPoolCapacity.isFull && (
+            <div style={{
+              background: 'rgba(244, 67, 54, 0.12)',
+              border: '1px solid var(--danger, #F44336)',
+              borderRadius: 8,
+              padding: '10px 14px',
+              marginBottom: 12,
+              fontSize: 13,
+              color: 'var(--danger, #F44336)',
+              lineHeight: 1.5,
+            }}>
+              This pool's Merkle tree is full ({TREE_CAPACITY.toLocaleString()} deposits). No more deposits can be accepted.
+              Withdraw any existing notes before a new pool contract is deployed.
+            </div>
+          )}
+          {tab === 'deposit' && !selectedPoolCapacity.isFull && selectedPoolCapacity.isNearFull && (
+            <div style={{
+              background: 'rgba(255, 152, 0, 0.12)',
+              border: '1px solid var(--warning, #FF9800)',
+              borderRadius: 8,
+              padding: '10px 14px',
+              marginBottom: 12,
+              fontSize: 13,
+              color: 'var(--warning, #FF9800)',
+              lineHeight: 1.5,
+            }}>
+              Pool is {selectedPoolCapacity.percentFull.toFixed(1)}% full — only {selectedPoolCapacity.remaining.toLocaleString()} deposit
+              {selectedPoolCapacity.remaining === 1 ? '' : 's'} remaining before this pool reaches capacity.
+            </div>
+          )}
+
           {tab === 'deposit' ? (
               <button
                 className={`tx-execute ${canDeposit ? 'tx-execute--ready' : 'tx-execute--disabled'}`}
                 onClick={handleDeposit}
                 disabled={!canDeposit}
               >
-                {selectedBatchWindow === null
-                  ? `Deposit ${selectedTier.label} ALGO`
-                  : `Deposit ${selectedTier.label} ALGO at ${batchWindows.find(w => w.id === selectedBatchWindow)?.slot ?? ''}`}
+                {!selectedActivePool
+                  ? 'No Active Pool'
+                  : selectedPoolCapacity.isFull
+                  ? 'Pool Full'
+                  : selectedBatchWindow === null
+                    ? `Deposit ${selectedTier.label} ALGO${selectedPoolGenerationCount > 1 ? ` (Pool #${selectedPoolGeneration})` : ''}`
+                    : `Deposit ${selectedTier.label} ALGO at ${batchWindows.find(w => w.id === selectedBatchWindow)?.slot ?? ''}`}
               </button>
           ) : (
             <button
@@ -552,6 +610,11 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                       <div className="manage-note__info">
                         <span className="manage-note__amount">
                           {noteAlgo.toFixed(2)} ALGO
+                          {note.appId && getPoolGenerationCount(note.denomination) > 1 && (
+                            <span style={{ fontSize: 10, color: 'var(--text-secondary)', marginLeft: 4 }}>
+                              Pool #{getPoolGeneration(note.appId)}
+                            </span>
+                          )}
                         </span>
                         <span className="manage-note__date">
                           {new Date(note.timestamp).toLocaleDateString()} {new Date(note.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -573,8 +636,8 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                             <CostBreakdown amount={noteAlgo} mode="withdraw" />
                           )}
                           {(() => {
-                            const notePool = POOL_CONTRACTS[note.denomination.toString()]
-                            const poolDeposits = notePool ? (tx.poolNextIndices.get(notePool.appId) ?? 0) : 0
+                            const notePoolAppId = note.appId ?? POOL_CONTRACTS[note.denomination.toString()]?.appId
+                            const poolDeposits = notePoolAppId ? (tx.poolNextIndices.get(notePoolAppId) ?? 0) : 0
                             return poolDeposits < 5 ? (
                               <div style={{ color: 'var(--danger)', fontSize: 12, marginBottom: 4 }}>
                                 Pool has {poolDeposits} deposit{poolDeposits === 1 ? '' : 's'} — withdrawal blocked for privacy (need 5+)
@@ -585,8 +648,8 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
                             <button
                               className="manage-btn manage-btn--send"
                               disabled={!isValidManageDest || (() => {
-                                const notePool = POOL_CONTRACTS[note.denomination.toString()]
-                                return notePool ? (tx.poolNextIndices.get(notePool.appId) ?? 0) < 5 : false
+                                const notePoolAppId = note.appId ?? POOL_CONTRACTS[note.denomination.toString()]?.appId
+                                return notePoolAppId ? (tx.poolNextIndices.get(notePoolAppId) ?? 0) < 5 : false
                               })()}
                               onClick={() => handleManageSend(note.commitment)}
                             >
@@ -724,7 +787,7 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
 
           {/* Falcon quantum-safe mode */}
           <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 8, marginBottom: 4 }}>
-            Optional: Use Falcon-1024 signatures for quantum-resistant transactions.
+            Experimental: Falcon-1024 post-quantum transaction signing.
           </div>
           <label className="tx-relayer-toggle">
             <input
@@ -732,8 +795,15 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
               checked={falcon.enabled}
               onChange={e => falcon.setEnabled(e.target.checked)}
             />
-            <span>Falcon-1024 Post-Quantum Signing</span>
+            <span>Falcon-1024 Post-Quantum Signing (Experimental)</span>
           </label>
+          {falcon.enabled && (
+            <div style={{ fontSize: 10, color: 'var(--warning, #e6a700)', marginTop: 4, padding: '6px 8px', background: 'rgba(230, 167, 0, 0.08)', borderRadius: 4, lineHeight: 1.4 }}>
+              Signing is PQ-secure (Falcon-1024), but note encryption uses X25519 (not PQ-secure).
+              On-chain encrypted notes could theoretically be decrypted by a future quantum computer.
+              This is defense-in-depth, not a complete post-quantum solution.
+            </div>
+          )}
           {falcon.enabled && falcon.loading && (
             <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
               Deriving Falcon keypair...
@@ -821,10 +891,14 @@ export function TransactionFlow({ onDeposit, onWithdraw, onComplete, walletBalan
         // Only show denominations with 2+ notes
         const pairableDenoms = Array.from(combinableDenoms.entries()).filter(([, arr]) => arr.length >= 2)
 
-        // Check pool sizes for split/combine eligibility
+        // Check pool sizes for split/combine eligibility (uses active pool for the denomination)
         const getPoolDeposits = (microAlgos: bigint) => {
-          const pool = POOL_CONTRACTS[microAlgos.toString()]
-          return pool ? (tx.poolNextIndices.get(pool.appId) ?? 0) : 0
+          try {
+            const pool = getActivePoolForTier(microAlgos)
+            return tx.poolNextIndices.get(pool.appId) ?? 0
+          } catch {
+            return 0
+          }
         }
         const splitSourcePoolLow = splittableNotes.length > 0 && getPoolDeposits(splittableNotes[0].denomination) < MIN_POOL_DEPOSITS_UI
         const combineSourcePoolLow = pairableDenoms.length > 0 && getPoolDeposits(BigInt(pairableDenoms[0][0])) < MIN_POOL_DEPOSITS_UI

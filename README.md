@@ -1,8 +1,22 @@
 # 2birds
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Network: Algorand Testnet](https://img.shields.io/badge/Network-Algorand%20Testnet-blue.svg)](https://testnet.algoexplorer.io/)
+[![Live Demo](https://img.shields.io/badge/Demo-2birds.pages.dev-purple.svg)](https://2birds.pages.dev)
+
 Private transactions on Algorand. Deposit ALGO, withdraw to any address — nobody can link the two.
 
 **Try it**: [2birds.pages.dev](https://2birds.pages.dev) (Algorand Testnet)
+
+> **Disclosure:** This project was built with heavy AI assistance. It has not been professionally audited. If you find issues, open an issue or PR.
+
+---
+
+## Why does this matter?
+
+Every Algorand transaction is public. Anyone can look up your address and see every payment you've ever made — your salary, your donations, who you do business with. That's a problem.
+
+2birds gives you the option to break that link. Pay someone without broadcasting it to the world. Receive funds without exposing your entire transaction history. Privacy isn't about hiding — it's about choosing what you share.
 
 ---
 
@@ -46,7 +60,8 @@ No subscriptions, no tokens, no hidden fees. The infrastructure runs on Cloudfla
 
 ---
 
-## For Algorand Developers
+<details>
+<summary><h2>For Algorand Developers</h2></summary>
 
 ### How it works under the hood
 
@@ -65,7 +80,7 @@ graph LR
 ```
 
 - **ZK proofs** generated client-side with snarkjs (PLONK on BN254)
-- **Verified on-chain** via PLONK LogicSig — 4 txns at 0.001 ALGO each (30x cheaper than Groth16 app calls)
+- **Verified on-chain** via PLONK LogicSig — 4 txns at 0.001 ALGO each (~0.004 ALGO total vs ~0.2 ALGO for Groth16 app-call verification on Algorand)
 - **Relayer** submits withdrawals so the user's wallet never touches the withdraw transaction
 - **Notes encrypted on-chain** via HPKE — recoverable even if you clear your browser
 
@@ -73,7 +88,7 @@ graph LR
 
 | Decision | Why |
 |----------|-----|
-| **PLONK over Groth16** | Same security, 30x cheaper (0.007 vs 0.2 ALGO per op) |
+| **PLONK over Groth16** | Both run on Algorand AVM — PLONK uses LogicSig verification (4 txns, ~0.007 ALGO) vs Groth16 app-call verification (~0.2 ALGO). Same proof security, ~30x cheaper on-chain |
 | **Relayer** | Without it, the withdrawer submits their own tx — linkable by IP and wallet |
 | **Fixed denominations** | If amounts vary, deposits and withdrawals can be matched by amount |
 | **HPKE note backup** | Other mixers use localStorage only — clear browser = lose funds |
@@ -81,7 +96,7 @@ graph LR
 | **One-shot verifier lock** | `setPlonkVerifiers` can only be called once — creator can't swap verifiers |
 | **Signal binding** | Proof public signals verified on-chain — prevents replay/substitution |
 | **Denomination enforcement** | Contract-enforced fixed tiers — prevents commitment-amount mismatch |
-| **Falcon PQ mode** | Optional Falcon-1024 post-quantum signing via AVM v12 `falcon_verify` |
+| **Falcon PQ mode** | Optional Falcon-1024 post-quantum transaction signing via AVM v12 `falcon_verify`. Note: only covers transaction signatures — HPKE note encryption uses X25519 (not PQ-secure), so encrypted on-chain notes remain vulnerable to quantum key recovery |
 
 ### Contracts (Testnet)
 
@@ -146,9 +161,12 @@ cd relayer && npm run deploy                                          # deploy r
 6. Deploy: `npm run deploy`
 7. Set `VITE_RELAYER_1_URL` and `VITE_RELAYER_1_ADDRESS` in your frontend `.env` to point to your relayer
 
+</details>
+
 ---
 
-## Technical Deep Dive
+<details>
+<summary><h2>Technical Deep Dive</h2></summary>
 
 For Foundation reviewers, auditors, and ZK engineers. Full details in [`docs/`](docs/).
 
@@ -164,7 +182,7 @@ graph TB
         HPKE[hpke.ts — Encrypted on-chain notes]
         SCAN[scanner.ts — Chain note recovery]
         AC[Anti-Correlation<br/>Soak · Cooldown · Jitter]
-        FALCON[Falcon PQ Mode<br/>Optional quantum-safe signing]
+        FALCON[Falcon PQ Mode<br/>Optional quantum-safe tx signing<br/>HPKE + BN254 not PQ-safe]
     end
 
     subgraph "ZK Circuits — Circom + snarkjs"
@@ -213,11 +231,11 @@ graph TB
 | PLONK proof system | [Circom](https://github.com/iden3/circom) 2.1.6 + [snarkjs](https://github.com/iden3/snarkjs), BN254 curve | Membership/insertion proofs |
 | LogicSig verification | 4 txns, BN254 pairing check in TEAL | On-chain proof verification (0.004 ALGO) |
 | MiMC Sponge | 220 rounds, x^5 Feistel, [circomlib](https://github.com/iden3/circomlib)-compatible | Merkle tree hashing + commitment |
-| HPKE | X25519 + HKDF-SHA256 + ChaCha20-Poly1305 | Encrypted note backup in txn notes |
+| HPKE | X25519 + HKDF-SHA256 + ChaCha20-Poly1305 | Encrypted note backup in txn notes. X25519 KEM is not post-quantum secure — a quantum adversary could decrypt stored notes |
 | Key derivation | HKDF for view keys, MiMC for spend secrets | View/spend separation |
 | Privacy addresses | Bech32 `priv1...` (66-byte payload) | Algo pubkey + X25519 view pubkey |
 | Merkle tree | Incremental, depth 16, ~65K leaf capacity | Commitment storage + membership proofs |
-| Falcon-1024 | NIST Level 5 post-quantum, AVM v12 `falcon_verify` | Optional quantum-safe transaction signing |
+| Falcon-1024 | NIST Level 5 post-quantum, AVM v12 `falcon_verify` | Optional quantum-safe transaction signing only — does not protect HPKE note encryption or BN254 proof system |
 | Signal binding | On-chain `verifyProofWithSignals` | Proof replay / parameter substitution prevention |
 
 ### Anti-correlation protections
@@ -238,7 +256,7 @@ graph LR
 
     subgraph "Infrastructure"
         DR["Dual Relayers<br/>Random per operation"]
-        IH["IP Hashing<br/>SHA-256, never raw"]
+        IH["IP Hashing<br/>SHA-256 in logs<br/>relayer sees raw"]
         SR["SRI Integrity<br/>SHA-384 on all assets"]
     end
 ```
@@ -258,7 +276,7 @@ graph LR
 | **Anti-correlation** | Soak, cooldown, jitter, cluster | None |
 | **Split/combine** | Yes | No |
 | **Contract trust** | Immutable (one-shot lock) | Immutable |
-| **IP protection** | SHA-256 hashed | Exposed to RPC |
+| **IP protection** | SHA-256 hashed (relayer sees raw IP; IPv4 brute-forceable) | Exposed to RPC |
 | **SRI integrity** | Yes | No |
 
 ### Exploitability scorecard
@@ -269,13 +287,13 @@ block-beta
     space:8
     block:2birds:8
         columns 8
-        t0["2birds — 7/8 mitigated"]:8
+        t0["2birds — 7/8 addressed (some client-side only)"]:8
         T1["Timing ✅"] T2["Linking ✅"] T3["IP ✅"] T4["Notes ✅"] T5["Sybil ✅"] T6["Tamper ✅"] T7["Amount ✅"] T8["Anon set ⚠️"]
     end
     space:8
     block:hermes:8
         columns 8
-        h0["HermesVault — 2/8 mitigated"]:8
+        h0["HermesVault — 1/8 mitigated (different design goals)"]:8
         H1["Timing ⚠️"] H2["Linking ⚠️"] H3["IP ⚠️"] H4["Notes ⚠️"] H5["Sybil ⚠️"] H6["Tamper ⚠️"] H7["Amount ✅"] H8["Anon set ⚠️"]
     end
 
@@ -301,12 +319,12 @@ block-beta
 
 | Attack Vector | 2birds | HermesVault |
 |---|---|---|
-| Timing correlation | **Mitigated** — jitter, cooldown, batch windows | Vulnerable |
+| Timing correlation | **Mitigated (client-side)** — jitter, cooldown, batch windows. Bypassable if user calls contract directly | No built-in mitigations |
 | Deposit-withdraw linking | **Mitigated** — relayer breaks tx graph | Vulnerable — user submits own tx |
-| IP metadata | **Mitigated** — SHA-256 hashed | Vulnerable — exposed to RPC |
+| IP metadata | **Partially mitigated** — SHA-256 hashed (note: IPv4 space is brute-forceable; relayer still sees raw IP) | No built-in mitigations — exposed to RPC |
 | Note loss | **Mitigated** — HPKE on-chain backup | Vulnerable — localStorage only |
-| Sybil / instant withdraw | **Mitigated** — soak time, cluster detection | Vulnerable |
-| Frontend tampering | **Mitigated** — SRI + CSP | Vulnerable |
+| Sybil / instant withdraw | **Mitigated (client-side)** — soak time, cluster detection. Not enforced on-chain | No built-in mitigations |
+| Frontend tampering | **Mitigated** — SRI + CSP | No SRI/CSP documented |
 | Amount correlation | Mitigated — fixed tiers + split/combine | Mitigated — fixed tiers |
 | Anonymity set | Depends on usage | Depends on usage |
 
@@ -321,7 +339,9 @@ block-beta
 
 ### Tech stack
 
-[Circom](https://github.com/iden3/circom) 2.1.6 + [snarkjs](https://github.com/iden3/snarkjs) (PLONK/Groth16, BN254) | [TealScript](https://github.com/algorandfoundation/TEALScript) | React + [Vite](https://github.com/vitejs/vite) | [Cloudflare](https://developers.cloudflare.com/workers/) Pages/Workers/R2/KV | IPFS | AVM v12 | [Falcon-1024](https://falcon-sign.info/) (optional PQ)
+[Circom](https://github.com/iden3/circom) 2.1.6 + [snarkjs](https://github.com/iden3/snarkjs) (PLONK/Groth16, BN254) | [TealScript](https://github.com/algorandfoundation/TEALScript) | React + [Vite](https://github.com/vitejs/vite) | [Cloudflare](https://developers.cloudflare.com/workers/) Pages/Workers/R2/KV | IPFS | AVM v12 | [Falcon-1024](https://falcon-sign.info/) (optional PQ tx signing)
+
+</details>
 
 ## License
 

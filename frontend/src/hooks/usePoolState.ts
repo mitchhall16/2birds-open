@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useWallet } from '@txnlab/use-wallet-react'
-import { ALGOD_CONFIG, INDEXER_CONFIG, POOL_CONTRACTS } from '../lib/config'
+import { ALGOD_CONFIG, INDEXER_CONFIG, POOL_CONTRACTS, getAllPools } from '../lib/config'
 import { loadNotes } from '../lib/privacy'
 import { cachedGetApp, cachedGetAccount } from '../lib/algodCache'
 import algosdk from 'algosdk'
@@ -92,9 +92,9 @@ export function usePoolState(): PoolState {
         ALGOD_CONFIG.port,
       )
 
-      // Pool total: sum deposits across all 3 tier pools
+      // Pool total: sum deposits across all pools (all generations)
       try {
-        const pools = Object.values(POOL_CONTRACTS)
+        const pools = getAllPools()
         const totals = await Promise.all(pools.map(p => fetchPoolDeposits(p.appId, p.appAddress, client).catch(() => 0)))
         setTotalDeposited(totals.reduce((a, b) => a + b, 0) / 1_000_000)
       } catch {
@@ -110,9 +110,9 @@ export function usePoolState(): PoolState {
         setUserBalance(0)
       }
 
-      // Deposit count: sum next_idx across all pools
+      // Deposit count: sum next_idx across all pools (all generations)
       try {
-        const pools = Object.values(POOL_CONTRACTS)
+        const pools = getAllPools()
         let total = 0
         for (const p of pools) {
           try {

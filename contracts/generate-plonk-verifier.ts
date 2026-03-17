@@ -187,6 +187,33 @@ function generatePlonkLsigTeal(vkey: PlonkVKey): string {
   comment(`PLONK LogicSig Verifier — nPublic=${nPublic}, domain=${n}`);
   blank();
 
+  // ═══ Rekey protection ═══
+  // Ensure no transaction in the group can rekey the verifier account.
+  // Without this, an attacker could include a txn that rekeys the LogicSig
+  // to an attacker-controlled address, then drain all funds.
+  comment('=== Rekey protection: no txn in group may rekey ===');
+  L('global GroupSize');
+  L('store 80 // group_size');
+  L('pushint 0');
+  L('store 81 // rekey_check_idx');
+  L('rekey_check_loop:');
+  L('load 81 // idx');
+  L('load 80 // group_size');
+  L('==');
+  L('bnz rekey_check_done');
+  L('load 81');
+  L('gtxns RekeyTo');
+  L('global ZeroAddress');
+  L('==');
+  L('assert // no transaction may rekey');
+  L('load 81');
+  L('pushint 1');
+  L('+');
+  L('store 81');
+  L('b rekey_check_loop');
+  L('rekey_check_done:');
+  blank();
+
   // ═══ Group index gate ═══
   comment('=== Group structure validation ===');
   comment('Index 0: full verification. Index 3: signals carrier (budget padding).');

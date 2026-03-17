@@ -1,6 +1,42 @@
 /**
  * Falcon-1024 Post-Quantum Signing for Algorand LogicSig
  *
+ * ╔══════════════════════════════════════════════════════════════════════╗
+ * ║  EXPERIMENTAL — POST-QUANTUM SIGNING ONLY                          ║
+ * ║                                                                    ║
+ * ║  This module provides Falcon-1024 transaction SIGNING, which is    ║
+ * ║  post-quantum secure. However, the overall system is NOT fully     ║
+ * ║  post-quantum because:                                             ║
+ * ║                                                                    ║
+ * ║  1. HPKE note encryption uses X25519 (DHKEM), which is vulnerable ║
+ * ║     to quantum attack. A quantum adversary who records encrypted   ║
+ * ║     note envelopes on-chain today could decrypt them later with a  ║
+ * ║     sufficiently powerful quantum computer ("harvest now, decrypt   ║
+ * ║     later"). This means deposit note confidentiality is NOT        ║
+ * ║     post-quantum secure. Replacing X25519 with a PQ KEM (e.g.,    ║
+ * ║     ML-KEM/Kyber) would fix this, but requires changes to the     ║
+ * ║     HPKE envelope format and all view-key derivation.              ║
+ * ║                                                                    ║
+ * ║  2. The Falcon LogicSig address is a SHA-512/256 hash of the TEAL ║
+ * ║     program bytes. We do NOT currently verify that this address is ║
+ * ║     off the Ed25519 curve (i.e., that no Ed25519 private key maps ║
+ * ║     to it). In practice, the probability of a random 32-byte hash ║
+ * ║     landing on the Ed25519 curve is ~50%, but finding the discrete ║
+ * ║     log for that point is as hard as breaking Ed25519 (~128-bit    ║
+ * ║     classical security). A quantum computer with enough qubits     ║
+ * ║     could theoretically find it via Shor's algorithm. This is      ║
+ * ║     mitigated by the fact that the LogicSig program enforces       ║
+ * ║     Falcon signature verification regardless — even if someone     ║
+ * ║     found the Ed25519 key, the AVM would still require a valid     ║
+ * ║     Falcon signature to authorize the transaction.                 ║
+ * ║                                                                    ║
+ * ║  3. The Algorand consensus layer itself uses Ed25519 for block     ║
+ * ║     signing and VRF, which are not post-quantum. Full PQ security  ║
+ * ║     requires protocol-level changes beyond this application.       ║
+ * ║                                                                    ║
+ * ║  Use this as defense-in-depth, not as a complete PQ solution.      ║
+ * ╚══════════════════════════════════════════════════════════════════════╝
+ *
  * Uses Algorand's Deterministic Falcon-1024 (algorand/falcon) — NOT the
  * standard PQClean Falcon. The AVM's falcon_verify opcode only accepts
  * deterministic-mode signatures (header 0xBA, 1-byte salt version, no nonce).
@@ -121,6 +157,16 @@ export async function deriveFalconKeypair(masterKey: bigint): Promise<{
  * Program size: ~1801 bytes (1793 pubkey + ~8 TEAL opcodes)
  * LogicSig with arg: ~3030 bytes (program + ~1230 byte Falcon sig in arg[0])
  * Requires atomic group of 4 txns for LogicSig pool budget (4 × 1000 = 4000).
+ *
+ * SECURITY NOTE: The resulting LogicSig contract address (SHA-512/256 of program
+ * bytes) may or may not correspond to a valid Ed25519 public key. We do NOT
+ * verify it is "off the curve." However, this is safe in practice because:
+ * (a) finding the Ed25519 discrete log is ~128-bit classical security,
+ * (b) the TEAL program enforces falcon_verify regardless of how the txn is
+ *     submitted — the AVM checks the LogicSig program, not just the address, and
+ * (c) Algorand does not allow both a LogicSig and an Ed25519 sig to authorize
+ *     the same transaction — it's one or the other, and for a LogicSig account
+ *     the program must approve.
  */
 export async function compileFalconProgram(
   client: algosdk.Algodv2,

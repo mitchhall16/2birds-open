@@ -428,6 +428,20 @@ class PrivacyPool extends Contract {
   }
 
   /**
+   * Read-only: return tree capacity info.
+   * Returns: [nextIndex, maxCapacity (1 << TREE_DEPTH), isFull (0 or 1)]
+   * Clients can call this to check remaining capacity before attempting deposits.
+   * Note: the hard capacity check `assert(leafIndex < (1 << TREE_DEPTH))` in deposit()
+   * and privateSend() is the ultimate backstop — this method is for pre-flight UX only.
+   */
+  getTreeInfo(): [uint64, uint64, uint64] {
+    const nextIdx = this.nextIndex.value;
+    const maxCapacity: uint64 = (1 << TREE_DEPTH);
+    const isFull: uint64 = nextIdx >= maxCapacity ? 1 : 0;
+    return [nextIdx, maxCapacity, isFull];
+  }
+
+  /**
    * Block contract updates — contract is immutable after deployment.
    */
   updateApplication(): void {

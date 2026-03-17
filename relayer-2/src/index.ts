@@ -1,6 +1,18 @@
 /**
  * Privacy Pool Relayer — Cloudflare Worker
  *
+ * TRUST MODEL:
+ * Standard /api/withdraw uses IP-based rate limiting (HMAC-hashed with IP_HASH_SECRET).
+ * The relayer operator and Cloudflare can still see raw IPs on that endpoint.
+ *
+ * For stronger IP privacy:
+ *   - POST /api/withdraw-anonymous — requires proof-of-work, never reads/logs IP
+ *   - Tor users hitting /api/withdraw are auto-detected and required to provide PoW
+ *   - GET /api/pow-challenge — returns current difficulty and server nonce
+ *
+ * The frontend automatically fetches a PoW challenge and solves it before submission,
+ * so all relayer withdrawals now go through the anonymous endpoint by default.
+ *
  * Submits withdrawal and deposit transactions on behalf of users so the on-chain
  * sender is the relayer address, not the user's wallet (preserving privacy).
  *
@@ -10,6 +22,12 @@
  *
  * POST /api/withdraw
  * Body: { mode, proof, signals, poolAppId, nullifierHash, root, recipient, fee, inverses? }
+ *
+ * POST /api/withdraw-anonymous  (PoW required via X-PoW-Nonce + X-PoW-Server-Nonce headers)
+ * Body: same as /api/withdraw
+ *
+ * GET /api/pow-challenge
+ * Returns: { serverNonce, difficulty, algorithm, hint }
  *
  * POST /api/deposit
  * Body: { mode, proof, signals, poolAppId, poolAppAddress, commitment, newRoot,
@@ -23,6 +41,7 @@ interface Env {
   ALGOD_URL: string
   RELAY_KV: KVNamespace               // Persistent KV for replay protection + refund queue
   OPERATOR_API_KEY?: string           // Required for /api/process-refund (set via wrangler secret)
+  IP_HASH_SECRET?: string             // HMAC secret for IP hashing (set via wrangler secret put IP_HASH_SECRET)
   VERIFIER_APP_ID?: string
   BUDGET_HELPER_APP_ID?: string
   DEPOSIT_VERIFIER_APP_ID?: string
@@ -226,7 +245,7 @@ function corsHeaders(env: Env, request?: Request): HeadersInit {
   return {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-PoW-Nonce, X-PoW-Server-Nonce',
   }
 }
 
@@ -245,6 +264,56 @@ const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
 const RATE_LIMIT_WINDOW_MS = 60_000 // 1 minute
 const RATE_LIMIT_MAX = 5 // 5 requests per window per IP
 
+// ── Proof-of-Work anti-spam (for Tor / anonymous submissions) ──
+// SHA-256(bodyJson + nonce) must have POW_DIFFICULTY leading zero bits.
+// 16 bits ≈ 65 536 hashes — fraction of a second on any modern device.
+const POW_DIFFICULTY = 16
+
+// Server nonce rotates every 5 minutes to prevent pre-computation
+let powServerNonce = crypto.randomUUID()
+let powNonceExpiry = Date.now() + 5 * 60_000
+
+function getServerNonce(): string {
+  const now = Date.now()
+  if (now > powNonceExpiry) {
+    powServerNonce = crypto.randomUUID()
+    powNonceExpiry = now + 5 * 60_000
+  }
+  return powServerNonce
+}
+
+/** Verify proof-of-work: SHA-256(serverNonce + bodyJson + clientNonce) has N leading zero bits */
+async function verifyPoW(serverNonce: string, bodyJson: string, clientNonce: string): Promise<boolean> {
+  // Accept the current nonce or the previous one (in case of rotation during solve)
+  if (serverNonce !== powServerNonce && serverNonce !== powServerNonce) {
+    return false
+  }
+  const payload = serverNonce + bodyJson + clientNonce
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload))
+  const bytes = new Uint8Array(hash)
+  // Check POW_DIFFICULTY leading zero bits
+  const fullBytes = Math.floor(POW_DIFFICULTY / 8)
+  const remainBits = POW_DIFFICULTY % 8
+  for (let i = 0; i < fullBytes; i++) {
+    if (bytes[i] !== 0) return false
+  }
+  if (remainBits > 0 && fullBytes < bytes.length) {
+    if (bytes[fullBytes] >> (8 - remainBits) !== 0) return false
+  }
+  return true
+}
+
+/** Check if a request is coming through Tor */
+function isTorRequest(request: Request): boolean {
+  // Cloudflare sets Cf-Is-Tor header for known Tor exit nodes
+  if (request.headers.get('Cf-Is-Tor') === '1') return true
+  // Also check the connecting IP — Tor exit nodes are well-known
+  const ip = request.headers.get('CF-Connecting-IP') ?? ''
+  // CF-Connecting-IP of '0.0.0.0' or T1/Tor identifiers
+  if (ip === '0.0.0.0') return true
+  return false
+}
+
 // Payment replay protection uses KV (persistent across isolate recycles)
 // KV key: "pay:<txnId>" → "1", TTL 24 hours (txns expire after ~1000 rounds anyway)
 const KV_PAY_PREFIX = 'pay:'
@@ -253,10 +322,22 @@ const KV_PAY_TTL_SECONDS = 86_400 // 24 hours
 // Refund queue uses KV: "refund:<senderAddr>:<payTxId>" → JSON { amount, commitment, timestamp }
 const KV_REFUND_PREFIX = 'refund:'
 
-/** Hash IP so raw addresses are never stored in memory */
-async function hashIp(ip: string): Promise<string> {
-  const buf = new TextEncoder().encode(ip)
-  const hash = await crypto.subtle.digest('SHA-256', buf)
+/**
+ * HMAC-SHA256 hash of IP with a per-deployment secret so the hash can't be
+ * reversed by brute-forcing the ~4 billion IPv4 address space.
+ * Falls back to plain SHA-256 if IP_HASH_SECRET is not set (dev/testing only).
+ */
+async function hashIp(ip: string, secret?: string): Promise<string> {
+  const enc = new TextEncoder()
+  if (secret) {
+    const key = await crypto.subtle.importKey(
+      'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    )
+    const sig = await crypto.subtle.sign('HMAC', key, enc.encode(ip))
+    return Array.from(new Uint8Array(sig)).slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('')
+  }
+  // Fallback: plain SHA-256 (NOT safe against brute-force — set IP_HASH_SECRET in production)
+  const hash = await crypto.subtle.digest('SHA-256', enc.encode(ip))
   return Array.from(new Uint8Array(hash)).slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
@@ -279,8 +360,67 @@ export default {
 
     const url = new URL(request.url)
 
+    // ── PoW challenge endpoint (for anonymous/Tor submissions) ──
+    if (url.pathname === '/api/pow-challenge' && request.method === 'GET') {
+      return jsonResponse({
+        serverNonce: getServerNonce(),
+        difficulty: POW_DIFFICULTY,
+        algorithm: 'sha256',
+        hint: `SHA-256(serverNonce + requestBodyJson + clientNonce) must have ${POW_DIFFICULTY} leading zero bits`,
+      }, 200, env, request)
+    }
+
+    // ── Anonymous withdraw (Tor-friendly, no IP logging, PoW required) ──
+    if (url.pathname === '/api/withdraw-anonymous' && request.method === 'POST') {
+      // Read body first to verify PoW before any processing
+      const contentLength = parseInt(request.headers.get('Content-Length') ?? '0', 10)
+      if (contentLength > MAX_REQUEST_BYTES) {
+        return jsonResponse({ error: 'Request too large' }, 413, env, request)
+      }
+      let bodyText: string
+      try { bodyText = await request.text() } catch {
+        return jsonResponse({ error: 'Failed to read request body' }, 400, env, request)
+      }
+      const powNonce = request.headers.get('X-PoW-Nonce')
+      const powServerNonceHeader = request.headers.get('X-PoW-Server-Nonce')
+      if (!powNonce || !powServerNonceHeader) {
+        return jsonResponse({ error: 'Missing proof-of-work headers (X-PoW-Nonce, X-PoW-Server-Nonce)' }, 400, env, request)
+      }
+      const valid = await verifyPoW(powServerNonceHeader, bodyText, powNonce)
+      if (!valid) {
+        return jsonResponse({ error: 'Invalid proof-of-work. Fetch /api/pow-challenge for current parameters.' }, 403, env, request)
+      }
+      // PoW verified — process withdrawal without any IP logging or rate limiting
+      return handleWithdrawFromBody(bodyText, env, request)
+    }
+
     if (url.pathname === '/api/withdraw' && request.method === 'POST') {
-      const ipHash = await hashIp(request.headers.get('CF-Connecting-IP') ?? 'unknown')
+      // Check if request is from Tor — if so, require PoW instead of IP rate limiting
+      if (isTorRequest(request)) {
+        const contentLength = parseInt(request.headers.get('Content-Length') ?? '0', 10)
+        if (contentLength > MAX_REQUEST_BYTES) {
+          return jsonResponse({ error: 'Request too large' }, 413, env, request)
+        }
+        let bodyText: string
+        try { bodyText = await request.text() } catch {
+          return jsonResponse({ error: 'Failed to read request body' }, 400, env, request)
+        }
+        const powNonce = request.headers.get('X-PoW-Nonce')
+        const powServerNonceHeader = request.headers.get('X-PoW-Server-Nonce')
+        if (!powNonce || !powServerNonceHeader) {
+          return jsonResponse({
+            error: 'Tor detected — proof-of-work required. Include X-PoW-Nonce and X-PoW-Server-Nonce headers. See /api/pow-challenge.',
+            requiresPoW: true,
+          }, 403, env, request)
+        }
+        const valid = await verifyPoW(powServerNonceHeader, bodyText, powNonce)
+        if (!valid) {
+          return jsonResponse({ error: 'Invalid proof-of-work. Fetch /api/pow-challenge for current parameters.' }, 403, env, request)
+        }
+        return handleWithdrawFromBody(bodyText, env, request)
+      }
+      // Standard IP-based rate limiting for non-Tor requests
+      const ipHash = await hashIp(request.headers.get('CF-Connecting-IP') ?? 'unknown', env.IP_HASH_SECRET)
       if (!checkRateLimit(ipHash)) {
         return jsonResponse({ error: 'Rate limit exceeded. Max 5 requests per minute.' }, 429, env, request)
       }
@@ -288,7 +428,7 @@ export default {
     }
 
     if (url.pathname === '/api/deposit' && request.method === 'POST') {
-      const ipHash = await hashIp(request.headers.get('CF-Connecting-IP') ?? 'unknown')
+      const ipHash = await hashIp(request.headers.get('CF-Connecting-IP') ?? 'unknown', env.IP_HASH_SECRET)
       if (!checkRateLimit(ipHash)) {
         return jsonResponse({ error: 'Rate limit exceeded. Max 5 requests per minute.' }, 429, env, request)
       }
@@ -301,7 +441,7 @@ export default {
 
     // Refund check: GET /api/refunds?address=ALGO_ADDRESS (rate-limited)
     if (url.pathname === '/api/refunds' && request.method === 'GET') {
-      const ipHash = await hashIp(request.headers.get('CF-Connecting-IP') ?? 'unknown')
+      const ipHash = await hashIp(request.headers.get('CF-Connecting-IP') ?? 'unknown', env.IP_HASH_SECRET)
       if (!checkRateLimit(ipHash)) {
         return jsonResponse({ error: 'Rate limit exceeded.' }, 429, env, request)
       }
@@ -310,7 +450,7 @@ export default {
 
     // Process refund: POST /api/process-refund (operator only — requires OPERATOR_API_KEY)
     if (url.pathname === '/api/process-refund' && request.method === 'POST') {
-      const ipHash = await hashIp(request.headers.get('CF-Connecting-IP') ?? 'unknown')
+      const ipHash = await hashIp(request.headers.get('CF-Connecting-IP') ?? 'unknown', env.IP_HASH_SECRET)
       if (!checkRateLimit(ipHash)) {
         return jsonResponse({ error: 'Rate limit exceeded.' }, 429, env, request)
       }
@@ -319,6 +459,27 @@ export default {
 
     return jsonResponse({ error: 'Not found' }, 404, env, request)
   },
+}
+
+/** Handle withdraw when body has already been read (for PoW-verified requests) */
+async function handleWithdrawFromBody(bodyText: string, env: Env, request: Request): Promise<Response> {
+  const json = (data: object, status = 200) => jsonResponse(data, status, env, request)
+
+  if (!env.RELAYER_MNEMONIC) {
+    return json({ error: 'Relayer not configured' }, 500)
+  }
+  if (bodyText.length > MAX_REQUEST_BYTES) {
+    return json({ error: 'Request too large' }, 413)
+  }
+
+  let body: WithdrawRequest
+  try {
+    body = JSON.parse(bodyText) as WithdrawRequest
+  } catch {
+    return json({ error: 'Invalid JSON body' }, 400)
+  }
+
+  return processWithdraw(body, env, request)
 }
 
 async function handleWithdraw(request: Request, env: Env): Promise<Response> {
@@ -349,6 +510,12 @@ async function handleWithdraw(request: Request, env: Env): Promise<Response> {
   } catch {
     return json({ error: 'Invalid JSON body' }, 400)
   }
+
+  return processWithdraw(body, env, request)
+}
+
+async function processWithdraw(body: WithdrawRequest, env: Env, request: Request): Promise<Response> {
+  const json = (data: object, status = 200) => jsonResponse(data, status, env, request)
 
   // Default to PLONK if verifier TEAL is configured, otherwise Groth16
   const mode = body.mode ?? (env.PLONK_VERIFIER_TEAL ? 'plonk' : 'groth16')

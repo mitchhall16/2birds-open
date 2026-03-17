@@ -1,6 +1,6 @@
 import { buildMimcSponge } from 'circomlibjs'
 import algosdk from 'algosdk'
-import { POOL_DENOMINATION, POOL_CONTRACTS, getPoolForTier } from './config'
+import { POOL_DENOMINATION, POOL_CONTRACTS, getPoolForTier, getAllPools, getPoolByAppId } from './config'
 import { deriveViewKeypair } from './keys'
 import { scanChainForNotes } from './scanner'
 
@@ -414,10 +414,11 @@ export async function saveNote(note: DepositNote): Promise<void> {
 
 /** Load deposit notes, filtering out stale notes from defunct pools */
 export async function loadNotes(): Promise<DepositNote[]> {
-  // Build a map: appId → denomination (microAlgos string key)
+  // Build a map: appId → denomination (microAlgos string key) across ALL pool generations
   const poolByAppId = new Map<number, string>()
-  for (const [denom, pool] of Object.entries(POOL_CONTRACTS)) {
-    poolByAppId.set(pool.appId, denom)
+  for (const pool of getAllPools()) {
+    const info = getPoolByAppId(pool.appId)
+    if (info) poolByAppId.set(pool.appId, info.denomination)
   }
 
   const all = await loadAllNotesAsync()
@@ -536,7 +537,7 @@ export async function importNotesBackup(backupStr: string, password: string): Pr
 /** Check if a note's nullifier has been spent on-chain */
 export async function isNoteSpent(client: algosdk.Algodv2, note: DepositNote): Promise<boolean> {
   if (!note.appId) {
-    // No appId — look up from denomination
+    // No appId — look up from denomination (uses the active pool as fallback)
     const pool = POOL_CONTRACTS[note.denomination.toString()]
     if (!pool) return false
     note = { ...note, appId: pool.appId }
@@ -1047,17 +1048,17 @@ export async function recoverNotes(
 ): Promise<{ recovered: DepositNote[]; total: number; spent: number }> {
   await initMimc()
 
-  // If a specific appId is given, look up its denomination; otherwise scan all tiers
+  // If a specific appId is given, look up its denomination; otherwise scan all pools (all generations)
   const poolsToScan: { appId: number; denomination: bigint }[] = appId
     ? (() => {
-        const entry = Object.entries(POOL_CONTRACTS).find(([, p]) => p.appId === appId)
-        const denom = entry ? BigInt(entry[0]) : POOL_DENOMINATION
+        const info = getPoolByAppId(appId)
+        const denom = info ? BigInt(info.denomination) : POOL_DENOMINATION
         return [{ appId, denomination: denom }]
       })()
-    : Object.entries(POOL_CONTRACTS).map(([denom, pool]) => ({
-        appId: pool.appId,
-        denomination: BigInt(denom),
-      }))
+    : getAllPools().map(pool => {
+        const info = getPoolByAppId(pool.appId)
+        return { appId: pool.appId, denomination: info ? BigInt(info.denomination) : POOL_DENOMINATION }
+      })
 
   const recovered: DepositNote[] = []
   let total = 0

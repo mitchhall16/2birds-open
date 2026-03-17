@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useWallet } from '@txnlab/use-wallet-react'
 import algosdk from 'algosdk'
-import { CONTRACTS, ALGOD_CONFIG, FEES, isValidTier, DENOMINATION_TIERS, getPoolForTier, POOL_CONTRACTS, RELAYERS, pickRelayer, BATCH_WINDOW_MINUTES, TREASURY_ADDRESS, PROTOCOL_FEE, STALE_NOTE_THRESHOLD, SUBSIDY_TIERS, USE_PLONK_LSIG, MIN_SOAK_DEPOSITS, OPERATION_COOLDOWN_MS, CLUSTER_WARNING_THRESHOLD, WITHDRAW_JITTER_MS, FALCON_EXTRA_FEE } from '../lib/config'
+import { CONTRACTS, ALGOD_CONFIG, FEES, isValidTier, DENOMINATION_TIERS, getPoolForTier, getActivePoolForTier, getPoolByAppId, getAllPools, POOL_CONTRACTS, POOL_REGISTRY, RELAYERS, pickRelayer, BATCH_WINDOW_MINUTES, TREASURY_ADDRESS, PROTOCOL_FEE, STALE_NOTE_THRESHOLD, SUBSIDY_TIERS, USE_PLONK_LSIG, MIN_SOAK_DEPOSITS, OPERATION_COOLDOWN_MS, CLUSTER_WARNING_THRESHOLD, WITHDRAW_JITTER_MS, FALCON_EXTRA_FEE } from '../lib/config'
 import { useFalcon, type DeriveResult } from '../contexts/FalconContext'
 import { createFalconSigner } from '../lib/falcon'
 import { useToast } from '../contexts/ToastContext'
@@ -52,6 +52,8 @@ import {
   clearTreeCache,
   incrementalSyncTree,
   syncAllTreesFromChain,
+  checkPoolCapacity,
+  TREE_CAPACITY,
 } from '../lib/tree'
 import { encryptNote, HPKE_ENVELOPE_LEN } from '../lib/hpke'
 import { isPrivacyAddress, decodePrivacyAddress, algoAddressFromPrivacyAddress } from '../lib/address'
@@ -421,10 +423,10 @@ export function useTransaction(): UseTransactionReturn {
     }
   }
 
-  /** Fetch pool nextIndex values for all active pools (parallel, with network retry) */
+  /** Fetch pool nextIndex values for all pools across all generations (parallel, with network retry) */
   async function fetchPoolNextIndices(client: algosdk.Algodv2): Promise<Map<number, number>> {
     const indices = new Map<number, number>()
-    const pools = Object.values(POOL_CONTRACTS)
+    const pools = getAllPools()
     const results = await Promise.allSettled(
       pools.map(async pool => {
         const state = await withRetry(() => readContractState(client, pool.appId))
@@ -460,11 +462,66 @@ export function useTransaction(): UseTransactionReturn {
     }
   }
 
+  /**
+   * Pre-flight capacity check — block deposits when tree is full, warn when >90%.
+   * The on-chain contract hard-stops at 65536 (assert leafIndex < 1 << TREE_DEPTH)
+   * but we catch it here to avoid wasting proof generation time and fees.
+   */
+  async function checkTreeCapacity(client: algosdk.Algodv2, poolAppId: number): Promise<void> {
+    try {
+      const state = await readContractState(client, poolAppId)
+      const cap = checkPoolCapacity(state.nextIndex)
+      if (cap.isFull) {
+        throw new Error(
+          `This pool's Merkle tree is full (${cap.capacity.toLocaleString()} deposits). ` +
+          `No more deposits can be accepted. A new pool contract must be deployed to continue.`
+        )
+      }
+      if (cap.isNearFull) {
+        addToast('error',
+          `Pool is ${cap.percentFull.toFixed(1)}% full (${cap.remaining.toLocaleString()} slots remaining). ` +
+          `Consider withdrawing funds before the pool reaches capacity.`
+        )
+      }
+    } catch (err) {
+      if ((err as Error).message.includes('tree is full')) throw err
+      // Don't block on network errors — the on-chain assert will catch it
+    }
+  }
+
   function bytesToHex(bytes: Uint8Array): string {
     return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
   }
 
-  /** Submit a withdrawal via a randomly-picked relayer service */
+  /**
+   * Solve a proof-of-work challenge from the relayer.
+   * SHA-256(serverNonce + bodyJson + clientNonce) must have `difficulty` leading zero bits.
+   */
+  async function solvePoW(
+    serverNonce: string,
+    bodyJson: string,
+    difficulty: number,
+  ): Promise<string> {
+    const encoder = new TextEncoder()
+    const fullBytes = Math.floor(difficulty / 8)
+    const remainBits = difficulty % 8
+    for (let nonce = 0; ; nonce++) {
+      const nonceStr = nonce.toString()
+      const payload = serverNonce + bodyJson + nonceStr
+      const hash = await crypto.subtle.digest('SHA-256', encoder.encode(payload))
+      const bytes = new Uint8Array(hash)
+      let valid = true
+      for (let i = 0; i < fullBytes; i++) {
+        if (bytes[i] !== 0) { valid = false; break }
+      }
+      if (valid && remainBits > 0 && fullBytes < bytes.length) {
+        if (bytes[fullBytes] >> (8 - remainBits) !== 0) valid = false
+      }
+      if (valid) return nonceStr
+    }
+  }
+
+  /** Submit a withdrawal via a randomly-picked relayer service (with PoW for anonymous privacy) */
   async function submitViaRelayer(
     proofBytes: Uint8Array,
     signalsBytes: Uint8Array,
@@ -477,21 +534,33 @@ export function useTransaction(): UseTransactionReturn {
     relayerAddress: string,
     inversesBytes?: Uint8Array,
   ): Promise<string> {
-    const resp = await fetch(`${relayerUrl}/api/withdraw`, {
+    const bodyJson = JSON.stringify({
+      mode: USE_PLONK_LSIG ? 'plonk' : 'groth16',
+      proof: bytesToHex(proofBytes),
+      signals: bytesToHex(signalsBytes),
+      inverses: inversesBytes ? bytesToHex(inversesBytes) : undefined,
+      poolAppId,
+      nullifierHash: bytesToHex(nullifierHashBytes),
+      root: bytesToHex(rootBytes),
+      recipient,
+      relayerAddress,
+      fee,
+    })
+
+    // Fetch PoW challenge and solve it — enables anonymous submission without IP tracking
+    const challengeResp = await fetch(`${relayerUrl}/api/pow-challenge`)
+    const challenge = await challengeResp.json() as { serverNonce: string; difficulty: number }
+    const clientNonce = await solvePoW(challenge.serverNonce, bodyJson, challenge.difficulty)
+
+    // Submit via the anonymous endpoint (no IP logging on server side)
+    const resp = await fetch(`${relayerUrl}/api/withdraw-anonymous`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mode: USE_PLONK_LSIG ? 'plonk' : 'groth16',
-        proof: bytesToHex(proofBytes),
-        signals: bytesToHex(signalsBytes),
-        inverses: inversesBytes ? bytesToHex(inversesBytes) : undefined,
-        poolAppId,
-        nullifierHash: bytesToHex(nullifierHashBytes),
-        root: bytesToHex(rootBytes),
-        recipient,
-        relayerAddress,
-        fee,
-      }),
+      headers: {
+        'Content-Type': 'application/json',
+        'X-PoW-Nonce': clientNonce,
+        'X-PoW-Server-Nonce': challenge.serverNonce,
+      },
+      body: bodyJson,
     })
     const data = await resp.json()
     if (!resp.ok) throw new Error(data.error || 'Relayer request failed')
@@ -842,6 +911,10 @@ export function useTransaction(): UseTransactionReturn {
 
       await initMimc()
 
+      // Pre-check tree capacity — block if full, warn if >90%
+      setState(s => ({ ...s, message: 'Checking pool capacity...' }))
+      await checkTreeCapacity(client, pool.appId)
+
       // Pre-check balance before expensive proof generation
       const subsidy = subsidyMicroAlgos ?? 0n
       const falconFee = isFalcon && !USE_PLONK_LSIG ? FALCON_EXTRA_FEE.groth16Padding : 0n
@@ -1126,7 +1199,9 @@ export function useTransaction(): UseTransactionReturn {
       return
     }
     const client = getClient()
-    const pool = getPoolForTier(note.denomination)
+    // Withdraw from the specific pool where the deposit was made (not necessarily the active one)
+    const notePool = note.appId ? getPoolByAppId(note.appId) : undefined
+    const pool = notePool ?? getPoolForTier(note.denomination)
 
     try {
       // Anti-correlation: enforce cooldown between operations
@@ -1248,7 +1323,8 @@ export function useTransaction(): UseTransactionReturn {
 
       if (viaRelayer) {
         // Submit via relayer — user doesn't sign, preserving privacy
-        setState(s => ({ ...s, message: 'Submitting via relayer...' }))
+        // Frontend solves a PoW challenge then submits to the anonymous endpoint (no IP logging)
+        setState(s => ({ ...s, message: 'Solving anti-spam challenge & submitting anonymously...' }))
         const relayerInverses = USE_PLONK_LSIG
           ? await computePlonkInverses('withdraw', proof, publicSignals)
           : undefined
@@ -1681,6 +1757,10 @@ export function useTransaction(): UseTransactionReturn {
 
       await initMimc()
 
+      // Pre-check tree capacity — block if full, warn if >90%
+      setState(s => ({ ...s, message: 'Checking pool capacity...' }))
+      await checkTreeCapacity(client, pool.appId)
+
       // Pre-check balance for combined privateSend fee
       const subsidy = subsidyMicroAlgos ?? 0n
       const falconFee = isFalcon && !USE_PLONK_LSIG ? FALCON_EXTRA_FEE.groth16Padding : 0n
@@ -2085,7 +2165,7 @@ export function useTransaction(): UseTransactionReturn {
   ): Promise<{ recovered: number; newNotes: number }> => {
     const viewKeypair = await getViewKeypair()
     if (!viewKeypair) throw new Error('View keypair not available — derive master key first')
-    const poolAppIds = Object.values(POOL_CONTRACTS).map(p => p.appId)
+    const poolAppIds = getAllPools().map(p => p.appId)
     const result = await recoverNotesFromChain(viewKeypair, poolAppIds, undefined, onProgress)
     const notes = await loadNotes()
     setState(s => ({ ...s, savedNotes: notes }))

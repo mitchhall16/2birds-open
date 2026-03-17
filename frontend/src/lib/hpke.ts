@@ -1,3 +1,31 @@
+/**
+ * HPKE Note Encryption — encrypts deposit notes for recipient scanning.
+ *
+ * ╔══════════════════════════════════════════════════════════════════════╗
+ * ║  NOT POST-QUANTUM SECURE                                           ║
+ * ║                                                                    ║
+ * ║  This module uses DHKEM(X25519, HKDF-SHA256) for key encapsulation.║
+ * ║  X25519 (Curve25519 ECDH) is vulnerable to Shor's algorithm on a  ║
+ * ║  cryptographically relevant quantum computer.                       ║
+ * ║                                                                    ║
+ * ║  Risk: "Harvest now, decrypt later" — encrypted note envelopes are ║
+ * ║  stored on-chain permanently. An adversary could record them today  ║
+ * ║  and decrypt them once a quantum computer is available, revealing   ║
+ * ║  deposit secrets, nullifiers, and amounts.                          ║
+ * ║                                                                    ║
+ * ║  To make this PQ-secure, replace DHKEM(X25519) with a PQ KEM such ║
+ * ║  as ML-KEM-768 (FIPS 203, formerly Kyber). This would require:     ║
+ * ║    - New envelope format (ML-KEM encapsulated keys are ~1088 bytes ║
+ * ║      vs. 32 bytes for X25519)                                      ║
+ * ║    - Updated view key derivation (keys.ts) to use ML-KEM keygen   ║
+ * ║    - Larger on-chain note storage (app box or note field)          ║
+ * ║    - A hybrid KEM (X25519 + ML-KEM) could be used for transition  ║
+ * ║                                                                    ║
+ * ║  Even with Falcon-1024 signing enabled, note CONFIDENTIALITY is    ║
+ * ║  only classically secure (~128-bit) due to this X25519 dependency. ║
+ * ╚══════════════════════════════════════════════════════════════════════╝
+ */
+
 import { x25519 } from '@noble/curves/ed25519.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { CipherSuite, DhkemX25519HkdfSha256, HkdfSha256 } from '@hpke/core'
@@ -5,6 +33,7 @@ import { Chacha20Poly1305 } from '@hpke/chacha20poly1305'
 import { scalarToBytes, bytesToScalar, uint64ToBytes, type DepositNote } from './privacy'
 
 // HPKE suite: X25519 + HKDF-SHA256 + ChaCha20-Poly1305
+// WARNING: X25519 is NOT post-quantum secure. See module-level comment above.
 const suite = new CipherSuite({
   kem: new DhkemX25519HkdfSha256(),
   kdf: new HkdfSha256(),
