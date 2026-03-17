@@ -8,7 +8,7 @@ Private transactions on Algorand. Deposit ALGO, withdraw to any address — nobo
 
 **Try it**: [2birds.pages.dev](https://2birds.pages.dev) (Algorand Testnet)
 
-> **Disclosure:** This project was built with heavy AI assistance. It has not been professionally audited. If you find issues, open an issue or PR.
+> ⚠️ **Disclosure:** This project was built with heavy AI assistance. It has not been professionally audited. If you find issues, open an issue or PR.
 
 ---
 
